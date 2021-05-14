@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <netdb.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <dirent.h>
@@ -46,7 +47,8 @@ enum task {
 	TASK_GPH,
 	TASK_BINARY,
 	TASK_ERROR,
-	TASK_REDIRECT
+	TASK_REDIRECT,
+	TASK_CGI
 };
 
 struct dir_task {
@@ -70,6 +72,13 @@ struct gph_task {
 };
 
 struct binary_task {
+	int rfd;
+};
+
+struct cgi_task {
+	ev_io input_watcher;
+	ev_child child_watcher;
+	pid_t pid;
 	int rfd;
 };
 
@@ -104,6 +113,7 @@ struct client {
 		struct txt_task tt;
 		struct gph_task gpht;
 		struct binary_task bt;
+		struct cgi_task ct;
 	} task_data;
 #ifdef USE_TLS
 	struct tls *tlsctx;
@@ -111,13 +121,14 @@ struct client {
 #endif
 };
 
-static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs);
-static void init_text(EV_P_ struct client *, int fd, struct stat *sb, const char *path, const char *fn, const char *qs);
-static void init_gph(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs);
-static void init_gophermap(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs);
-static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs);
-static void init_error(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs);
-static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs);
+static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
+static void init_text(EV_P_ struct client *, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
+static void init_gph(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
+static void init_gophermap(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
+static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
+static void init_error(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
+static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
+static void init_cgi(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
 
 static void update_read(EV_P_ struct client *c, int events);
 static void update_dir(EV_P_ struct client *c, int events);
@@ -127,6 +138,7 @@ static void update_gph(EV_P_ struct client *c, int events);
 static void update_binary(EV_P_ struct client *c, int events);
 static void update_error(EV_P_ struct client *c, int events);
 static void update_redirect(EV_P_ struct client *c, int events);
+static void update_cgi(EV_P_ struct client *c, int events);
 
 static void finish_read(EV_P_ struct client *c);
 static void finish_dir(EV_P_ struct client *c);
@@ -136,9 +148,10 @@ static void finish_gph(EV_P_ struct client *c);
 static void finish_binary(EV_P_ struct client *c);
 static void finish_error(EV_P_ struct client *c);
 static void finish_redirect(EV_P_ struct client *c);
+static void finish_cgi(EV_P_ struct client *c);
 
 static const struct {
-	void (*init)(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs);
+	void (*init)(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
 	void (*update)(EV_P_ struct client *c, int events);
 	void (*finish)(EV_P_ struct client *c);
 } tasks[] = {
@@ -150,6 +163,7 @@ static const struct {
 	{ init_binary, update_binary, finish_binary },
 	{ init_error, update_error, finish_error },
 	{ init_redirect, update_redirect, finish_redirect },
+	{ init_cgi, update_cgi, finish_cgi },
 };
 
 struct listener listen_watcher;
@@ -244,7 +258,7 @@ static bool tryfileat(int *fd, const char *fn)
 	return true;
 }
 
-void guess_task(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs)
+void guess_task(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
 	(void)qs;
 	if (sb->st_mode & S_IFDIR) {
@@ -266,7 +280,7 @@ void guess_task(EV_P_ struct client *c, int fd, struct stat *sb, const char *pat
 	} else {
 		c->task = TASK_BINARY;
 	}
-	tasks[c->task].init(EV_A_ c, fd, sb, path, fn, qs);
+	tasks[c->task].init(EV_A_ c, fd, sb, path, fn, qs, ss);
 }
 
 static void client_close(EV_P_ struct client *c)
@@ -404,10 +418,11 @@ static char guess_type(struct dirent *e)
 	return '9';
 }
 
-static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs)
+static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
 	(void)sb;
 	(void)qs;
+	(void)ss;
 
 	c->task_data.dt.base = dupensurepath(path);
 	if (*path) {
@@ -419,44 +434,48 @@ static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char
 	c->task_data.dt.i = 0;
 }
 
-static void init_text(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs)
+static void init_text(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
 	(void)sb;
 	(void)path;
 	(void)fn;
 	(void)qs;
+	(void)ss;
 	c->task_data.tt.rfd = fd;
 	c->task_data.tt.used = 0;
 }
 
-static void init_gophermap(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs)
+static void init_gophermap(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
 	(void)sb;
 	(void)path;
 	(void)fn;
 	(void)qs;
+	(void)ss;
 	c->task_data.tt.rfd = fd;
 	c->task_data.tt.used = 0;
 }
 
-static void init_gph(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs)
+static void init_gph(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
 	(void)sb;
 	(void)path;
 	(void)fn;
 	(void)qs;
+	(void)ss;
 	c->task_data.gpht.rfd = fd;
 	c->task_data.gpht.base = dupensurepath(path);
 	c->task_data.gpht.used = 0;
 }
 
-static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs)
+static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
 	int sbsz = 0;
 
 	(void)path;
 	(void)fn;
 	(void)qs;
+	(void)ss;
 
 	getsockopt(c->fd, SOL_SOCKET, SO_SNDBUF, &sbsz, &(socklen_t){ sizeof(sbsz) });
 
@@ -480,7 +499,7 @@ static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const c
 	}
 }
 
-static void init_error(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs)
+static void init_error(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
 	(void)c;
 	(void)fd;
@@ -488,14 +507,16 @@ static void init_error(EV_P_ struct client *c, int fd, struct stat *sb, const ch
 	(void)path;
 	(void)fn;
 	(void)qs;
+	(void)ss;
 }
 
-static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs)
+static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
 	(void)fd;
 	(void)sb;
 	(void)path;
 	(void)qs;
+	(void)ss;
 
 	size_t fnl = strlen(fn);
 	char b[fnl + 1];
@@ -512,6 +533,135 @@ static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const
 				 "	</body>\r\n"
 				 "</html>\r\n",
 				 b, b, b);
+}
+
+static char *joinstr(const char *a, const char *b, char separator)
+{
+	char *rv = malloc(strlen(a) + strlen(b) + 2);
+	sprintf(rv, "%s%c%s", a, separator, b);
+	return rv;
+}
+
+static char *envstr(const char *key, const char *value)
+{
+	return joinstr(key, value ? value : "", '=');
+}
+
+static void read_cgi(EV_P_ ev_io *w, int revents)
+{
+	struct client *c = PTR_FROM_FIELD(struct client, task_data.ct.input_watcher, w);
+	int r = read(c->task_data.ct.rfd, c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used);
+
+	(void)revents;
+
+	if (r <= 0) {
+		close(c->task_data.ct.rfd);
+		c->task_data.ct.rfd = -1;
+		ev_io_start(EV_A_ &c->watcher);
+
+		return;
+	}
+
+	c->buffer_used += r;
+
+	if (c->buffer_used == sizeof(c->buffer))
+		ev_io_stop(EV_A_ &c->task_data.ct.input_watcher);
+	ev_io_start(EV_A_ &c->watcher);
+}
+
+static void reap_cgi(EV_P_ ev_child *c, int revent)
+{
+	(void)c;
+	(void)revent;
+}
+
+static void init_cgi(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
+{
+	int pfd[2];
+	int nfd;
+	size_t nenv = 0;
+	char *env[20];
+	char abuf[INET6_ADDRSTRLEN];
+	char *file;
+
+	(void)fd;
+	(void)sb;
+	(void)fn;
+
+	if (pipe(pfd)) {
+		client_close(EV_A_ c);
+		return;
+	}
+
+	switch ((c->task_data.ct.pid = fork())) {
+	case 0:
+		break;
+	case -1:
+		close(pfd[0]);
+		close(pfd[1]);
+		client_close(EV_A_ c);
+		return;
+	default:
+		close(pfd[1]);
+		c->task_data.ct.rfd = pfd[0];
+
+		ev_io_init(&c->task_data.ct.input_watcher, read_cgi, pfd[0], EV_READ);
+		ev_child_init(&c->task_data.ct.child_watcher, reap_cgi, c->task_data.ct.pid, 0);
+		ev_io_start(EV_A_ &c->task_data.ct.input_watcher);
+
+		return;
+	}
+
+	close(pfd[0]);
+	close(STDIN_FILENO);
+	close(STDOUT_FILENO);
+	close(STDERR_FILENO);
+
+	nfd = open("/dev/null", O_RDONLY);
+	if (nfd != STDIN_FILENO) {
+		dup2(nfd, STDIN_FILENO);
+		close(nfd);
+	}
+
+	dup2(pfd[1], STDOUT_FILENO);
+	close(pfd[1]);
+
+	nfd = open("/dev/null", O_WRONLY);
+	if (nfd != STDERR_FILENO) {
+		dup2(nfd, STDERR_FILENO);
+		close(nfd);
+	}
+
+	file = joinstr(gopherroot, path, '/');
+
+	getnameinfo((struct sockaddr *)&c->addr, c->addrlen, abuf, sizeof(abuf), NULL, 0, NI_NUMERICHOST);
+	env[nenv++] = envstr("GATEWAY_INTERFACE", "CGI/1.1");
+	env[nenv++] = envstr("PATH_INFO", path);
+	env[nenv++] = envstr("PATH_TRANSLATED", file);
+	env[nenv++] = envstr("QUERY_STRING", qs);
+	env[nenv++] = envstr("SELECTOR", qs);
+	env[nenv++] = envstr("REQUEST", qs);
+	env[nenv++] = envstr("REMOTE_ADDR", abuf);
+	env[nenv++] = envstr("REMOTE_HOST", abuf);
+	env[nenv++] = envstr("REDIRECT_STATUS", "");
+	env[nenv++] = envstr("REQUEST_METHOD", "GET");
+	env[nenv++] = envstr("SCRIPT_NAME", file);
+	env[nenv++] = envstr("SERVER_NAME", hostname);
+	env[nenv++] = envstr("SERVER_PORT", oport);
+	env[nenv++] = envstr("SERVER_PROTOCOL", "gopher/1.0");
+	env[nenv++] = envstr("X_GOPHER_SEARCH", ss);
+	env[nenv++] = envstr("SEARCHREQUEST", ss);
+
+#ifdef USE_TLS
+	if (c->tlsstate == READY) {
+		env[nenv++] = envstr("GOPHERS", "on");
+		env[nenv++] = envstr("HTTPS", "on");
+	}
+#endif
+	env[nenv++] = NULL;
+
+	execle(file, file, ss ? ss : "", qs ? qs : "", hostname, oport, (char *)NULL, env);
+	exit(1);
 }
 
 static void update_dir(EV_P_ struct client *c, int revents)
@@ -904,30 +1054,37 @@ static void update_read(EV_P_ struct client *c, int revents)
 		char *p;
 		char *bn;
 		char *qs;
+		char *ss;
 		const char *uri;
 		size_t rl;
-		size_t qsl = 0;
-		if (nl > c->buffer && nl[-1] == '\r')
-			nl--;
-		qs = memchr(c->buffer, '\t', nl - c->buffer);
 
 		ev_io_stop(EV_A_ &c->watcher);
 		ev_io_modify(&c->watcher, EV_WRITE);
 		ev_io_start(EV_A_ &c->watcher);
 
+		if (nl > c->buffer && nl[-1] == '\r')
+			nl--;
+		*nl = '\0';
+
+		ss = memchr(c->buffer, '\t', nl - c->buffer);
+
+		if (ss) {
+			rl = ss - c->buffer;
+			*ss++ = '\0';
+		} else
+			rl = nl - c->buffer;
+
+		qs = memchr(c->buffer, '?', rl);
+
 		if (qs) {
 			rl = qs - c->buffer;
-			qsl = nl - ++qs;
-			*nl = '\0';
-		} else {
-			rl = nl - c->buffer;
+			*qs++ = '\0';
 		}
-		(void)qsl;
 
 		if ((uri = strnpfx(c->buffer, rl, "URI:")) || (uri = strnpfx(c->buffer, rl, "URL:"))) {
 			c->buffer[rl] = '\0';
 			c->task = TASK_REDIRECT;
-			tasks[c->task].init(EV_A_ c, -1, NULL, c->buffer, uri, qs);
+			tasks[c->task].init(EV_A_ c, -1, NULL, c->buffer, uri, qs, ss);
 			return;
 		}
 
@@ -941,17 +1098,22 @@ static void update_read(EV_P_ struct client *c, int revents)
 
 		int dfd = open(gopherroot, O_RDONLY | O_DIRECTORY);
 		if (dfd >= 0) {
-			int ffd = openat(dfd, rl ? p : ".", O_RDONLY);
-			if (ffd >= 0) {
-				struct stat sb;
-
-				fstat(ffd, &sb);
-
-				c->buffer_used = 0;
-				guess_task(EV_A_ c, ffd, &sb, p, bn, qs);
+			if (strsfx(bn, ".cgi") && !faccessat(dfd, p, X_OK, 0)) {
+				c->task = TASK_CGI;
+				tasks[c->task].init(EV_A_ c, -1, NULL, p, bn, qs, ss);
 			} else {
-				c->buffer_used = sprintf(c->buffer, "3Resource not found\r\n.\r\n");
-				c->task = TASK_ERROR;
+				int ffd = openat(dfd, rl ? p : ".", O_RDONLY);
+				if (ffd >= 0) {
+					struct stat sb;
+
+					fstat(ffd, &sb);
+
+					c->buffer_used = 0;
+					guess_task(EV_A_ c, ffd, &sb, p, bn, qs, ss);
+				} else {
+					c->buffer_used = sprintf(c->buffer, "3Resource not found\r\n.\r\n");
+					c->task = TASK_ERROR;
+				}
 			}
 			close(dfd);
 		} else {
@@ -968,6 +1130,19 @@ static void update_read(EV_P_ struct client *c, int revents)
 		c->buffer_used = sprintf(c->buffer, "3Request size too large\r\n.\r\n");
 		client_close(EV_A_ c);
 	}
+}
+
+static void update_cgi(EV_P_ struct client *c, int revents)
+{
+	(void)revents;
+
+	if (c->task_data.ct.rfd < 0) {
+		client_close(EV_A_ c);
+		return;
+	}
+
+	ev_io_stop(EV_A_ &c->watcher);
+	ev_io_start(EV_A_ &c->task_data.ct.input_watcher);
 }
 
 static void finish_read(EV_P_ struct client *c)
@@ -1015,6 +1190,13 @@ static void finish_error(EV_P_ struct client *c)
 static void finish_redirect(EV_P_ struct client *c)
 {
 	(void)c;
+}
+
+static void finish_cgi(EV_P_ struct client *c)
+{
+	if (c->task_data.ct.rfd >= 0)
+		close(c->task_data.ct.rfd);
+	ev_io_stop(EV_A_ &c->task_data.ct.input_watcher);
 }
 
 static void child_timeout(EV_P_ ev_timer *w, int revents)
