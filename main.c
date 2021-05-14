@@ -1208,7 +1208,7 @@ static void child_timeout(EV_P_ ev_timer *w, int revents)
 	client_close(EV_A_ c);
 }
 
-static void listen_cb (EV_P_ ev_io *w, int revents)
+static void listen_cb(EV_P_ ev_io *w, int revents)
 {
 	struct listener *l = (struct listener *)w;
 	struct client *c = malloc(sizeof(*c));
@@ -1233,8 +1233,14 @@ static void listen_cb (EV_P_ ev_io *w, int revents)
 	ev_io_start(EV_A_ &c->watcher);
 }
 
-void usage(void)
+static void usage(void)
 {
+	exit(1);
+}
+
+static void croak(const char *s)
+{
+	perror(s);
 	exit(1);
 }
 
@@ -1306,7 +1312,7 @@ int main (int argc, char *argv[])
 	}
 
 	if (getaddrinfo(bindto, port, &hints, &addrs))
-		usage();
+		croak("Resolving bind address failed");
 
 	for (ai = addrs; ai; ai = ai->ai_next) {
 		lfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
@@ -1319,16 +1325,17 @@ int main (int argc, char *argv[])
 
 		if (!bind(lfd, ai->ai_addr, ai->ai_addrlen))
 			break;
-		perror("Bind failed");
 
 		close(lfd);
 	}
 
+	if (!ai)
+		croak("Bind failed");
+
 	freeaddrinfo(addrs);
 
-	if (listen(lfd, 10)) {
-		perror("Listen failed");
-	}
+	if (listen(lfd, 10))
+		croak("Listen failed");
 
 #ifdef USE_TLS
 	if (keyfile && certfile) {
@@ -1344,14 +1351,18 @@ int main (int argc, char *argv[])
 
 	if (group) {
 		struct group *g = getgrnam(group);
-		if (!g || setgid(g->gr_gid))
-			usage();
+		if (!g)
+			croak("No such group");
+		if (setgid(g->gr_gid))
+			croak("setgid failed");
 	}
 
 	if (user) {
 		struct passwd *u = getpwnam(user);
-		if (!u || setuid(u->pw_uid))
-			usage();
+		if (!u)
+			croak("No such user");
+		if (setuid(u->pw_uid))
+			croak("setuid failed");
 	}
 
 	if (dofork) {
