@@ -882,6 +882,37 @@ static void update_gophermap(EV_P_ struct client *c, int revents)
 	c->task_data.tt.used -= base - c->task_data.tt.linebuf;
 }
 
+static char *strunesctok(char *str, char *delim, char esc)
+{
+	static char *state = NULL;
+	char *w;
+	char *rv;
+
+	if (str)
+		state = str;
+	if (!state)
+		return NULL;
+
+	rv = state;
+
+	for (w = state; *state && !strchr(delim, *state);) {
+		if (*state == esc)
+			state++;
+		if (!*state)
+			break;
+		*w++ = *state++;
+	}
+
+	if (!*state)
+		state = NULL;
+	else
+		state++;
+
+	*w = '\0';
+
+	return rv;
+}
+
 static void update_gph(EV_P_ struct client *c, int revents)
 {
 	int r;
@@ -941,11 +972,11 @@ static void update_gph(EV_P_ struct client *c, int revents)
 				base++;
 			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "i%s\t.\t.\t.\r\n", base);
 		} else {
-			const char *type = strtok(base + 1, "|");
-			const char *desc = type ? strtok(NULL, "|") : NULL;
-			const char *resource = desc ? strtok(NULL, "|") : NULL;
-			const char *server = resource ? strtok(NULL, "|") : NULL;
-			const char *port = server ? strtok(NULL, "|") : NULL;
+			const char *type = strunesctok(base + 1, "|", '\\');
+			const char *desc = strunesctok(NULL, "|", '\\');
+			const char *resource = strunesctok(NULL, "|", '\\');
+			const char *server = strunesctok(NULL, "|", '\\');
+			const char *port = strunesctok(NULL, "|", '\\');
 
 			if (t[-1] == ']')
 				*--t = '\0';
