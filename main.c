@@ -536,6 +536,9 @@ static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const c
 		ssize_t wr = 0;
 		int w;
 
+		if (!data)
+			return;
+
 		while (wr < sb->st_size) {
 			if ((w = client_write(c, data + wr, sb->st_size - wr)) <= 0)
 				break;
@@ -545,8 +548,6 @@ static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const c
 		munmap(data, sb->st_size);
 
 		client_close(EV_A_ c);
-
-		return;
 	}
 }
 
