@@ -1,5 +1,5 @@
 LDFLAGS += -lev -ltls
-CFLAGS += -W -Wall -std=c99 -DUSE_TLS
+CFLAGS += -W -Wall -std=c99 -DUSE_TLS -g -O0
 SOURCES := main.c
 OBJS := $(patsubst %.c,%.o,$(SOURCES))
 
