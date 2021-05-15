@@ -20,6 +20,7 @@
 #include <pwd.h>
 #include <grp.h>
 #include <fcntl.h>
+#include <limits.h>
 #ifdef USE_TLS
 #include <tls.h>
 #endif
@@ -1233,6 +1234,7 @@ int main (int argc, char *argv[])
 	const char *keyfile = NULL;
 	const char *certfile = NULL;
 #endif
+	char gopherrootbuf[PATH_MAX];
 	struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_flags = AI_PASSIVE, .ai_socktype = SOCK_STREAM };
 	struct addrinfo *addrs;
 	struct addrinfo *ai;
@@ -1346,6 +1348,9 @@ int main (int argc, char *argv[])
 		if (setuid(u->pw_uid))
 			croak("setuid failed");
 	}
+
+	if (*gopherroot != '/')
+		gopherroot = realpath(gopherroot, gopherrootbuf);
 
 	if (dofork) {
 		if (fork()) {
