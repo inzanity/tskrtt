@@ -289,7 +289,12 @@ static bool tryfileat(int *fd, const char *fn)
 
 static char *joinstr(const char *a, const char *b, char separator)
 {
-	char *rv = malloc(strlen(a) + strlen(b) + 2);
+	char *rv;
+	if (!a || !*a)
+		return strdup(b);
+	if (!b || !*b)
+		return strdup(a);
+	rv = malloc(strlen(a) + strlen(b) + 2);
 	sprintf(rv, "%s%c%s", a, separator, b);
 	return rv;
 }
