@@ -1003,7 +1003,7 @@ static void update_gph(EV_P_ struct client *c, int revents)
 {
 	(void)revents;
 
-	if (c->task_data.tt.rfd < 0) {
+	if (c->task_data.gpht.rfd < 0) {
 		client_close(EV_A_ c);
 		return;
 	}
@@ -1016,8 +1016,8 @@ static void update_gph(EV_P_ struct client *c, int revents)
 
 		c->buffer_used += n;
 
-		close(c->task_data.tt.rfd);
-		c->task_data.tt.rfd = -1;
+		close(c->task_data.gpht.rfd);
+		c->task_data.gpht.rfd = -1;
 	}
 }
 
