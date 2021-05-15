@@ -726,13 +726,67 @@ static void update_redirect(EV_P_ struct client *c, int revents)
 	client_close(EV_A_ c);
 }
 
-static void update_text(EV_P_ struct client *c, int revents)
+static bool line_foreach(EV_P_ int fd, char *buffer, size_t buffer_size, size_t *buffer_used, bool (*line_cb)(EV_P_ struct client *c, char *line, size_t linelen), struct client *c)
 {
 	int r;
 	char *nl;
-	char *base;
+	char *bp;
+
+	if (*buffer_used < buffer_size) {
+		r = read(fd, buffer + *buffer_used, buffer_size - *buffer_used);
+		if (r <= 0) {
+			if (*buffer_used)
+				return !line_cb(EV_A_ c, buffer, *buffer_used);
+			return false;
+		}
+
+		*buffer_used += r;
+	}
+
+	nl = memchr(buffer, '\n', *buffer_used);
+
+	if (!nl) {
+		if (*buffer_used == buffer_size && line_cb(EV_A_ c, buffer, buffer_size))
+			*buffer_used = 0;
+		return true;
+	}
+
+	bp = buffer;
+	do {
+		char *t = nl;
+		if (t > bp && t[-1] == '\r')
+			t--;
+
+		if (!line_cb(EV_A_ c, bp, t - bp))
+			break;
+
+		bp = nl + 1;
+	} while ((nl = memchr(bp, '\n', *buffer_used - (bp - buffer))));
+
+	memmove(buffer, bp, *buffer_used - (bp - buffer));
+	*buffer_used -= bp - buffer;
+
+	return true;
+}
+
+static bool process_text_line(EV_P_ struct client *c, char *line, size_t linelen)
+{
 	int n;
 
+	if (linelen == 1 && *line == '.')
+		n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "..\r\n");
+	else
+		n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\r\n", (int)linelen, line);
+
+	if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
+		return false;
+
+	c->buffer_used += n;
+	return true;
+}
+
+static void update_text(EV_P_ struct client *c, int revents)
+{
 	(void)revents;
 
 	if (c->task_data.tt.rfd < 0) {
@@ -740,59 +794,17 @@ static void update_text(EV_P_ struct client *c, int revents)
 		return;
 	}
 
-	r = read(c->task_data.tt.rfd, c->task_data.tt.linebuf + c->task_data.tt.used, sizeof(c->task_data.tt.linebuf) - c->task_data.tt.used);
+	if (!line_foreach(EV_A_ c->task_data.tt.rfd, c->task_data.tt.linebuf, sizeof(c->task_data.tt.linebuf), &c->task_data.tt.used, process_text_line, c)) {
+		int n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, ".\r\n");
 
-	if (r <= 0) {
-		if (c->task_data.tt.used) {
-			if (c->task_data.tt.linebuf[c->task_data.tt.used - 1] == '\r')
-				c->task_data.tt.used--;
+		if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
+			return;
 
-			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\r\n", (int)c->task_data.tt.used, c->task_data.tt.linebuf);
-			c->buffer_used += n;
-			c->task_data.tt.used = 0;
-		}
-
-		n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, ".\r\n");
 		c->buffer_used += n;
 
 		close(c->task_data.tt.rfd);
 		c->task_data.tt.rfd = -1;
-
-		return;
 	}
-
-	c->task_data.tt.used += r;
-	nl = memchr(c->task_data.tt.linebuf, '\n', c->task_data.tt.used);
-	
-	if (!nl) {
-		if (c->task_data.tt.used == sizeof(c->task_data.tt.linebuf)) {
-			c->buffer_used += sprintf(c->buffer + c->buffer_used, "%.*s\r\n", (int)c->task_data.tt.used, c->task_data.tt.linebuf);
-			c->task_data.tt.used = 0;
-		}
-		return;
-	}
-
-	base = c->task_data.tt.linebuf;
-	do {
-		char *t = nl;
-
-		if (t > base && t[-1] == '\r')
-			t--;
-
-		if (t == base + 1 && *base == '.')
-			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "..\r\n");
-		else
-			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\r\n", (int)(t - base), base);
-
-		if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
-			break;
-		c->buffer_used += n;
-
-		base = nl + 1;
-	} while ((nl = memchr(base, '\n', c->task_data.tt.used - (base - c->task_data.tt.linebuf))));
-
-	memmove(c->task_data.tt.linebuf, base, c->task_data.tt.used - (base - c->task_data.tt.linebuf));
-	c->task_data.tt.used -= base - c->task_data.tt.linebuf;
 }
 
 static size_t strnchrcnt(const char *haystack, char needle, size_t hsl)
@@ -803,13 +815,34 @@ static size_t strnchrcnt(const char *haystack, char needle, size_t hsl)
 	return n;
 }
 
-static void update_gophermap(EV_P_ struct client *c, int revents)
+static bool process_gophermap_line(EV_P_ struct client *c, char *line, size_t linelen)
 {
-	int r;
-	char *nl;
-	char *base;
 	int n;
 
+	if (*line == 'i' || *line == '3')
+		n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\t.\t.\t.\r\n", (int)linelen, line);
+	else {
+		size_t tabcount = strnchrcnt(line, '\t', linelen);
+
+		if (tabcount > 2)
+			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\r\n", (int)linelen, line);
+		else if (tabcount > 1)
+			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\t70\r\n", (int)linelen, line);
+		else if (tabcount)
+			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\t%s\t%s\r\n", (int)linelen, line, hostname, oport);
+		else
+			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "i%.*s\t.\t.\t.\r\n", (int)linelen, line);
+	}
+
+	if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
+		return false;
+
+	c->buffer_used += n;
+	return true;
+}
+
+static void update_gophermap(EV_P_ struct client *c, int revents)
+{
 	(void)revents;
 
 	if (c->task_data.tt.rfd < 0) {
@@ -817,69 +850,17 @@ static void update_gophermap(EV_P_ struct client *c, int revents)
 		return;
 	}
 
-	r = read(c->task_data.tt.rfd, c->task_data.tt.linebuf + c->task_data.tt.used, sizeof(c->task_data.tt.linebuf) - c->task_data.tt.used);
+	if (!line_foreach(EV_A_ c->task_data.tt.rfd, c->task_data.tt.linebuf, sizeof(c->task_data.tt.linebuf), &c->task_data.tt.used, process_gophermap_line, c)) {
+		int n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, ".\r\n");
 
-	if (r <= 0) {
-		if (c->task_data.tt.used) {
-			if (c->task_data.tt.linebuf[c->task_data.tt.used - 1] == '\r')
-				c->task_data.tt.used--;
+		if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
+			return;
 
-			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\r\n", (int)c->task_data.tt.used, c->task_data.tt.linebuf);
-			c->buffer_used += n;
-			c->task_data.tt.used = 0;
-		}
-
-		n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, ".\r\n");
 		c->buffer_used += n;
 
 		close(c->task_data.tt.rfd);
 		c->task_data.tt.rfd = -1;
-
-		return;
 	}
-
-	c->task_data.tt.used += r;
-	nl = memchr(c->task_data.tt.linebuf, '\n', c->task_data.tt.used);
-	
-	if (!nl) {
-		if (c->task_data.tt.used == sizeof(c->task_data.tt.linebuf)) {
-			c->buffer_used += sprintf(c->buffer + c->buffer_used, "%.*s\r\n", (int)c->task_data.tt.used, c->task_data.tt.linebuf);
-			c->task_data.tt.used = 0;
-		}
-		return;
-	}
-
-	base = c->task_data.tt.linebuf;
-	do {
-		char *t = nl;
-
-		if (t > base && t[-1] == '\r')
-			t--;
-
-		if (*base == 'i' || *base == '3')
-			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\t.\t.\t.\r\n", (int)(t - base), base);
-		else {
-			size_t tabcount = strnchrcnt(base, '\t', t - base);
-
-			if (tabcount > 2)
-				n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\r\n", (int)(t - base), base);
-			else if (tabcount > 1)
-				n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\t70\r\n", (int)(t - base), base);
-			else if (tabcount)
-				n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\t%s\t%s\r\n", (int)(t - base), base, hostname, oport);
-			else
-				n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "i%.*s\t.\t.\t.\r\n", (int)(t - base), base);
-		}
-
-		if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
-			break;
-		c->buffer_used += n;
-
-		base = nl + 1;
-	} while ((nl = memchr(base, '\n', c->task_data.tt.used - (base - c->task_data.tt.linebuf))));
-
-	memmove(c->task_data.tt.linebuf, base, c->task_data.tt.used - (base - c->task_data.tt.linebuf));
-	c->task_data.tt.used -= base - c->task_data.tt.linebuf;
 }
 
 static char *strunesctok(char *str, char *delim, char esc)
@@ -913,99 +894,69 @@ static char *strunesctok(char *str, char *delim, char esc)
 	return rv;
 }
 
-static void update_gph(EV_P_ struct client *c, int revents)
+static bool process_gph_line(EV_P_ struct client *c, char *line, size_t linelen)
 {
-	int r;
-	char *nl;
-	char *base;
 	int n;
 
+	line[linelen] = '\0';
+
+	if (*line != '[' || *line == 't') {
+		if (*line == 't')
+			line++;
+		n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "i%s\t.\t.\t.\r\n", line);
+	} else {
+		const char *type = strunesctok(line + 1, "|", '\\');
+		const char *desc = strunesctok(NULL, "|", '\\');
+		const char *resource = strunesctok(NULL, "|", '\\');
+		const char *server = strunesctok(NULL, "|", '\\');
+		const char *port = strunesctok(NULL, "|", '\\');
+
+		if (line[linelen - 1] == ']')
+			line[--linelen] = '\0';
+
+		if (!resource)
+			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "3Invalid line\r\n");
+		else {
+			if (!server || !strcmp(server, "server"))
+				server = hostname;
+			else if (!port)
+				port = dfl_port;
+			if (!port || !strcmp(port, "port"))
+				port = oport;
+			if (strpfx(resource, "URI:") || strpfx(resource, "URL:") || *resource == '/' || strcmp(server, hostname) || strcmp(port, oport))
+				n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%s%s\t%s\t%s\t%s\r\n", type, desc, resource, server, port);
+			else
+				n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%s%s\t/%s%s\t%s\t%s\r\n", type, desc, c->task_data.gpht.base, resource, server, port);
+		}
+	}
+
+	if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
+		return false;
+
+	c->buffer_used += n;
+	return true;
+}
+
+static void update_gph(EV_P_ struct client *c, int revents)
+{
 	(void)revents;
 
-	if (c->task_data.gpht.rfd < 0) {
+	if (c->task_data.tt.rfd < 0) {
 		client_close(EV_A_ c);
 		return;
 	}
 
-	r = read(c->task_data.gpht.rfd, c->task_data.gpht.linebuf + c->task_data.gpht.used, sizeof(c->task_data.gpht.linebuf) - c->task_data.gpht.used);
-
-	if (r <= 0) {
-		if (c->task_data.gpht.used) {
-			if (c->task_data.gpht.linebuf[c->task_data.gpht.used - 1] == '\r')
-				c->task_data.gpht.used--;
-
-			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\r\n", (int)c->task_data.gpht.used, c->task_data.gpht.linebuf);
-			c->buffer_used += n;
-			c->task_data.gpht.used = 0;
-		}
-
-		n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, ".\r\n");
-		c->buffer_used += n;
-
-		close(c->task_data.gpht.rfd);
-		c->task_data.gpht.rfd = -1;
-
-		return;
-	}
-
-	c->task_data.gpht.used += r;
-	nl = memchr(c->task_data.gpht.linebuf, '\n', c->task_data.gpht.used);
-	
-	if (!nl) {
-		if (c->task_data.gpht.used == sizeof(c->task_data.gpht.linebuf)) {
-			c->buffer_used += sprintf(c->buffer + c->buffer_used, "%.*s\r\n", (int)c->task_data.gpht.used, c->task_data.gpht.linebuf);
-			c->task_data.gpht.used = 0;
-		}
-		return;
-	}
-
-	base = c->task_data.gpht.linebuf;
-	do {
-		char *t = nl;
-
-		if (t > base && t[-1] == '\r')
-			t--;
-		*t = '\0';
-
-		if (*base != '[' || *base == 't') {
-			if (*base == 't')
-				base++;
-			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "i%s\t.\t.\t.\r\n", base);
-		} else {
-			const char *type = strunesctok(base + 1, "|", '\\');
-			const char *desc = strunesctok(NULL, "|", '\\');
-			const char *resource = strunesctok(NULL, "|", '\\');
-			const char *server = strunesctok(NULL, "|", '\\');
-			const char *port = strunesctok(NULL, "|", '\\');
-
-			if (t[-1] == ']')
-				*--t = '\0';
-
-			if (!resource)
-				n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "3Invalid line\r\n");
-			else {
-				if (!server || !strcmp(server, "server"))
-					server = hostname;
-				else if (!port)
-					port = dfl_port;
-				if (!port || !strcmp(port, "port"))
-					port = oport;
-				if (strpfx(resource, "URI:") || strpfx(resource, "URL:") || *resource == '/' || strcmp(server, hostname) || strcmp(port, oport))
-					n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%s%s\t%s\t%s\t%s\r\n", type, desc, resource, server, port);
-				else
-					n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%s%s\t/%s%s\t%s\t%s\r\n", type, desc, c->task_data.gpht.base, resource, server, port);
-			}
-		}
+	if (!line_foreach(EV_A_ c->task_data.gpht.rfd, c->task_data.gpht.linebuf, sizeof(c->task_data.gpht.linebuf) - 1, &c->task_data.gpht.used, process_gph_line, c)) {
+		int n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, ".\r\n");
 
 		if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
-			break;
+			return;
+
 		c->buffer_used += n;
 
-		base = nl + 1;
-	} while ((nl = memchr(base, '\n', c->task_data.gpht.used - (base - c->task_data.gpht.linebuf))));
-
-	memmove(c->task_data.gpht.linebuf, base, c->task_data.gpht.used - (base - c->task_data.gpht.linebuf));
-	c->task_data.gpht.used -= base - c->task_data.gpht.linebuf;
+		close(c->task_data.tt.rfd);
+		c->task_data.tt.rfd = -1;
+	}
 }
 
 static void update_read(EV_P_ struct client *c, int revents)
