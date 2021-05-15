@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
+#include <time.h>
 #ifdef USE_TLS
 #include <tls.h>
 #endif
@@ -38,6 +39,7 @@ const char *gopherroot = dfl_gopherroot;
 const char *oport = NULL;
 
 char *argv0;
+int logfd = -1;
 
 #define FOFFSET(x, y) (ptrdiff_t)(&((x *)NULL)->y)
 #define PTR_FROM_FIELD(x, y, z) ((x *)((size_t)z - FOFFSET(x, y)))
@@ -349,6 +351,33 @@ static void client_close(EV_P_ struct client *c)
 	ev_io_stop(EV_A_ &c->watcher);
 	close(c->fd);
 	free(c);
+}
+
+static void logprintf(const char *fmt, ...)
+{
+	va_list args;
+
+	if (logfd < 0)
+		return;
+
+	va_start(args, fmt);
+	vdprintf(logfd, fmt, args);
+	va_end(args);
+}
+
+static void accesslog(struct client *c, const char *resource, const char *qs, const char *ss)
+{
+	char tbuf[64] = "";
+	char abuf[INET6_ADDRSTRLEN];
+
+	if (logfd < 0)
+		return;
+
+	getnameinfo((struct sockaddr *)&c->addr, c->addrlen, abuf, sizeof(abuf), NULL, 0, NI_NUMERICHOST);
+	strftime(tbuf, sizeof(tbuf), "%d/%b/%Y:%H:%M:%S %z", localtime(&(time_t){ time(NULL) }));
+
+	logprintf("%s - - [%s] \"%s\" \"%s\" \"%s\"\n",
+	    abuf, tbuf, resource, qs ? qs : "", ss ? ss : "");
 }
 
 static bool client_printf(struct client *c, const char *fmt, ...)
@@ -1098,8 +1127,10 @@ static void update_read(EV_P_ struct client *c, int revents)
 			*qs++ = '\0';
 		}
 
+		c->buffer[rl] = '\0';
+		accesslog(c, c->buffer, qs, ss);
+
 		if ((uri = strnpfx(c->buffer, rl, "URI:")) || (uri = strnpfx(c->buffer, rl, "URL:"))) {
-			c->buffer[rl] = '\0';
 			c->task = TASK_REDIRECT;
 			tasks[c->task].init(EV_A_ c, -1, NULL, c->buffer, uri, qs, ss);
 			return;
@@ -1325,6 +1356,7 @@ int main (int argc, char *argv[])
 	const char *port = dfl_port;
 	const char *user = NULL;
 	const char *group = NULL;
+	const char *logfile = NULL;
 	int lfd = -1;
 	bool dofork = true;
 
@@ -1367,6 +1399,9 @@ int main (int argc, char *argv[])
 		case 'g':
 			group = EARGF(usage());
 			break;
+		case 'l':
+			logfile = EARGF(usage());
+			break;
 	} ARGEND;
 
 	if (!oport)
@@ -1396,6 +1431,9 @@ int main (int argc, char *argv[])
 
 		close(lfd);
 	}
+
+	if (logfile && (logfd = open(logfile, O_WRONLY | O_APPEND | O_CREAT, 0644)) < 0)
+		croak("Log opening failed");
 
 	if (!ai)
 		croak("Bind failed");
