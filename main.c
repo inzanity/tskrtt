@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <dirent.h>
+#include <stdarg.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
@@ -345,6 +346,21 @@ static void client_close(EV_P_ struct client *c)
 	free(c);
 }
 
+static bool client_printf(struct client *c, const char *fmt, ...)
+{
+	int n;
+	va_list args;
+	va_start(args, fmt);
+	n = vsnprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, fmt, args);
+	va_end(args);
+
+	if (n < 0 || (size_t)n > sizeof(c->buffer) - c->buffer_used)
+		return false;
+
+	c->buffer_used += n;
+	return true;
+}
+
 static int client_write(struct client *c, void *buffer, size_t n)
 {
 #ifdef USE_TLS
@@ -480,7 +496,7 @@ static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char
 	if (*path) {
 		char b[fn - path];
 		memcpy(b, path, fn - path);
-		c->buffer_used += sprintf(c->buffer, "1..\t/%.*s\t%s\t%s\r\n", (int)(fn - path), b, hostname, oport);
+		client_printf(c, "1..\t/%.*s\t%s\t%s\r\n", (int)(fn - path), b, hostname, oport);
 	}
 	c->task_data.dt.n = xfdscandir(fd, &c->task_data.dt.entries, filterdot, alphasort);
 	c->task_data.dt.i = 0;
@@ -728,8 +744,6 @@ static void init_dcgi(EV_P_ struct client *c, int fd, struct stat *sb, const cha
 
 static void update_dir(EV_P_ struct client *c, int revents)
 {
-	size_t pos = 0;
-
 	(void)revents;
 
 	if (c->task_data.dt.i == c->task_data.dt.n + 1) {
@@ -738,30 +752,21 @@ static void update_dir(EV_P_ struct client *c, int revents)
 	}
 
 	for (; c->task_data.dt.i < c->task_data.dt.n; c->task_data.dt.i++) {
-		int b = snprintf(c->buffer + pos, sizeof(c->buffer) - pos, "%c%s\t/%s%s\t%s\t%s\r\n",
-				 guess_type(c->task_data.dt.entries[c->task_data.dt.i]),
-				 c->task_data.dt.entries[c->task_data.dt.i]->d_name,
-				 c->task_data.dt.base,
-				 c->task_data.dt.entries[c->task_data.dt.i]->d_name,
-				 hostname, oport);
-		if ((size_t)b > sizeof(c->buffer) - pos) {
-			if (pos)
-				break;
-			b = sprintf(c->buffer, "3Filename too long\r\n");
+		if (!client_printf(c, "%c%s\t/%s%s\t%s\t%s\r\n",
+				   guess_type(c->task_data.dt.entries[c->task_data.dt.i]),
+				   c->task_data.dt.entries[c->task_data.dt.i]->d_name,
+				   c->task_data.dt.base,
+				   c->task_data.dt.entries[c->task_data.dt.i]->d_name,
+				   hostname, oport)) {
+			if (c->buffer_used)
+				return;
+			client_printf(c, "3Filename too long\r\n");
 		}
-		pos += b;
 		free(c->task_data.dt.entries[c->task_data.dt.i]);
 	}
 
-	if (c->task_data.dt.i == c->task_data.dt.n) {
-		int b = snprintf(c->buffer + pos, sizeof(c->buffer) - pos, ".\r\n");
-		if ((size_t)b <= sizeof(c->buffer) - pos) {
-			pos += b;
-			c->task_data.dt.i++;
-		}
-	}
-
-	c->buffer_used = pos;
+	if (client_printf(c, ".\r\n"))
+		c->task_data.dt.i++;
 }
 
 static void update_binary(EV_P_ struct client *c, int revents)
@@ -833,18 +838,9 @@ static bool line_foreach(EV_P_ int fd, char *buffer, size_t buffer_size, size_t 
 
 static bool process_text_line(EV_P_ struct client *c, char *line, size_t linelen)
 {
-	int n;
-
 	if (linelen == 1 && *line == '.')
-		n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "..\r\n");
-	else
-		n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\r\n", (int)linelen, line);
-
-	if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
-		return false;
-
-	c->buffer_used += n;
-	return true;
+		return client_printf(c, "..\r\n");
+	return client_printf(c, "%.*s\r\n", (int)linelen, line);
 }
 
 static void update_text(EV_P_ struct client *c, int revents)
@@ -857,12 +853,8 @@ static void update_text(EV_P_ struct client *c, int revents)
 	}
 
 	if (!line_foreach(EV_A_ c->task_data.tt.rfd, c->task_data.tt.linebuf, sizeof(c->task_data.tt.linebuf), &c->task_data.tt.used, process_text_line, c)) {
-		int n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, ".\r\n");
-
-		if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
+		if (!client_printf(c, ".\r\n"))
 			return;
-
-		c->buffer_used += n;
 
 		close(c->task_data.tt.rfd);
 		c->task_data.tt.rfd = -1;
@@ -879,28 +871,19 @@ static size_t strnchrcnt(const char *haystack, char needle, size_t hsl)
 
 static bool process_gophermap_line(EV_P_ struct client *c, char *line, size_t linelen)
 {
-	int n;
-
 	if (*line == 'i' || *line == '3')
-		n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\t.\t.\t.\r\n", (int)linelen, line);
+		return client_printf(c, "%.*s\t.\t.\t.\r\n", (int)linelen, line);
 	else {
 		size_t tabcount = strnchrcnt(line, '\t', linelen);
 
 		if (tabcount > 2)
-			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\r\n", (int)linelen, line);
-		else if (tabcount > 1)
-			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\t70\r\n", (int)linelen, line);
-		else if (tabcount)
-			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%.*s\t%s\t%s\r\n", (int)linelen, line, hostname, oport);
-		else
-			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "i%.*s\t.\t.\t.\r\n", (int)linelen, line);
+			return client_printf(c, "%.*s\r\n", (int)linelen, line);
+		if (tabcount > 1)
+			return client_printf(c, "%.*s\t70\r\n", (int)linelen, line);
+		if (tabcount)
+			return client_printf(c, "%.*s\t%s\t%s\r\n", (int)linelen, line, hostname, oport);
+		return client_printf(c, "i%.*s\t.\t.\t.\r\n", (int)linelen, line);
 	}
-
-	if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
-		return false;
-
-	c->buffer_used += n;
-	return true;
 }
 
 static void update_gophermap(EV_P_ struct client *c, int revents)
@@ -913,12 +896,8 @@ static void update_gophermap(EV_P_ struct client *c, int revents)
 	}
 
 	if (!line_foreach(EV_A_ c->task_data.tt.rfd, c->task_data.tt.linebuf, sizeof(c->task_data.tt.linebuf), &c->task_data.tt.used, process_gophermap_line, c)) {
-		int n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, ".\r\n");
-
-		if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
+		if (!client_printf(c, ".\r\n"))
 			return;
-
-		c->buffer_used += n;
 
 		close(c->task_data.tt.rfd);
 		c->task_data.tt.rfd = -1;
@@ -958,14 +937,12 @@ static char *strunesctok(char *str, char *delim, char esc)
 
 static bool process_gph_line(EV_P_ struct client *c, char *line, size_t linelen)
 {
-	int n;
-
 	line[linelen] = '\0';
 
 	if (*line != '[' || *line == 't') {
 		if (*line == 't')
 			line++;
-		n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "i%s\t.\t.\t.\r\n", line);
+		return client_printf(c, "i%s\t.\t.\t.\r\n", line);
 	} else {
 		const char *type = strunesctok(line + 1, "|", '\\');
 		const char *desc = strunesctok(NULL, "|", '\\');
@@ -977,26 +954,21 @@ static bool process_gph_line(EV_P_ struct client *c, char *line, size_t linelen)
 			line[--linelen] = '\0';
 
 		if (!resource)
-			n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "3Invalid line\r\n");
-		else {
-			if (!server || !strcmp(server, "server"))
-				server = hostname;
-			else if (!port)
-				port = dfl_port;
-			if (!port || !strcmp(port, "port"))
-				port = oport;
-			if (strpfx(resource, "URI:") || strpfx(resource, "URL:") || *resource == '/' || strcmp(server, hostname) || strcmp(port, oport))
-				n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%s%s\t%s\t%s\t%s\r\n", type, desc, resource, server, port);
-			else
-				n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "%s%s\t/%s%s\t%s\t%s\r\n", type, desc, c->task_data.gpht.base, resource, server, port);
-		}
+			return client_printf(c, "3Invalid line\r\n");
+
+		if (!server || !strcmp(server, "server"))
+			server = hostname;
+		else if (!port)
+			port = dfl_port;
+
+		if (!port || !strcmp(port, "port"))
+			port = oport;
+
+		if (strpfx(resource, "URI:") || strpfx(resource, "URL:") || *resource == '/' || strcmp(server, hostname) || strcmp(port, oport))
+			return client_printf(c, "%s%s\t%s\t%s\t%s\r\n", type, desc, resource, server, port);
+
+		return client_printf(c, "%s%s\t/%s%s\t%s\t%s\r\n", type, desc, c->task_data.gpht.base, resource, server, port);
 	}
-
-	if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
-		return false;
-
-	c->buffer_used += n;
-	return true;
 }
 
 static void update_gph(EV_P_ struct client *c, int revents)
@@ -1009,12 +981,8 @@ static void update_gph(EV_P_ struct client *c, int revents)
 	}
 
 	if (!line_foreach(EV_A_ c->task_data.gpht.rfd, c->task_data.gpht.linebuf, sizeof(c->task_data.gpht.linebuf) - 1, &c->task_data.gpht.used, process_gph_line, c)) {
-		int n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, ".\r\n");
-
-		if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
+		if (!client_printf(c, ".\r\n"))
 			return;
-
-		c->buffer_used += n;
 
 		close(c->task_data.gpht.rfd);
 		c->task_data.gpht.rfd = -1;
@@ -1199,12 +1167,8 @@ static void read_dcgi(EV_P_ ev_io *w, int revents)
 	(void)revents;
 
 	if (!line_foreach(EV_A_ c->task_data.dct.ct.rfd, c->task_data.dct.gpht.linebuf, sizeof(c->task_data.dct.gpht.linebuf) - 1, &c->task_data.dct.gpht.used, process_gph_line, c)) {
-		int n = snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, ".\r\n");
-
-		if ((size_t)n > sizeof(c->buffer) - c->buffer_used)
+		if (!client_printf(c, ".\r\n"))
 			return;
-
-		c->buffer_used += n;
 
 		close(c->task_data.dct.ct.rfd);
 		c->task_data.dct.ct.rfd = -1;
