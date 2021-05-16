@@ -62,6 +62,7 @@ struct dir_task {
 	char *base;
 	int n;
 	int i;
+	int dfd;
 };
 
 struct txt_task {
@@ -504,9 +505,9 @@ static void child_cb(EV_P_ ev_io *w, int revents)
 	tasks[c->task].update(EV_A_ c, revents);
 }
 
-static char guess_type(struct dirent *e)
+static char guess_type(struct dirent *e, struct stat *s)
 {
-	if (e->d_type == DT_DIR)
+	if (s->st_mode & S_IFDIR)
 		return '1';
 	if (strsfx(e->d_name, ".txt"))
 		return '0';
@@ -535,6 +536,7 @@ static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char
 		memcpy(b, path, fn - path);
 		client_printf(c, "1..\t/%.*s\t%s\t%s\r\n", (int)(fn - path), b, hostname, oport);
 	}
+	c->task_data.dt.dfd = dup(fd);
 	c->task_data.dt.n = xfdscandir(fd, &c->task_data.dt.entries, filterdot, alphasort);
 	c->task_data.dt.i = 0;
 }
@@ -789,8 +791,11 @@ static void update_dir(EV_P_ struct client *c, int revents)
 	}
 
 	for (; c->task_data.dt.i < c->task_data.dt.n; c->task_data.dt.i++) {
+		struct stat sb;
+		if (fstatat(c->task_data.dt.dfd, c->task_data.dt.entries[c->task_data.dt.i]->d_name, &sb, 0))
+			perror("fstatat");
 		if (!client_printf(c, "%c%s\t/%s%s\t%s\t%s\r\n",
-				   guess_type(c->task_data.dt.entries[c->task_data.dt.i]),
+				   guess_type(c->task_data.dt.entries[c->task_data.dt.i], &sb),
 				   c->task_data.dt.entries[c->task_data.dt.i]->d_name,
 				   c->task_data.dt.base,
 				   c->task_data.dt.entries[c->task_data.dt.i]->d_name,
@@ -1249,6 +1254,7 @@ static void finish_dir(EV_P_ struct client *c)
 		free(c->task_data.dt.entries[c->task_data.dt.i]);
 	free(c->task_data.dt.entries);
 	free(c->task_data.dt.base);
+	close(c->task_data.dt.dfd);
 }
 
 static void finish_text(EV_P_ struct client *c)
