@@ -1485,6 +1485,9 @@ int main (int argc, char *argv[])
 			close(lfd);
 			return 0;
 		}
+		close(STDIN_FILENO);
+		close(STDOUT_FILENO);
+		close(STDERR_FILENO);
 	}
 
 	listen_watcher.fd = lfd;
