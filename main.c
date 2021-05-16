@@ -1041,7 +1041,6 @@ static void update_read(EV_P_ struct client *c, int revents)
 		}
 
 		if (byte0 == 22) {
-			c->tlsstate = HANDSHAKE;
 			if (tls_accept_socket(listen_watcher.tlsctx, &c->tlsctx, c->fd) < 0) {
 				client_close(EV_A_ c);
 				return;
@@ -1447,10 +1446,12 @@ int main (int argc, char *argv[])
 	if (keyfile && certfile) {
 		tls_init();
 		listen_watcher.tlsctx = tls_server();
-		tlscfg = tls_config_new();
-		tls_config_set_key_file(tlscfg, keyfile);
-		tls_config_set_cert_file(tlscfg, certfile);
-		tls_configure(listen_watcher.tlsctx, tlscfg);
+		if (!(tlscfg = tls_config_new()) ||
+		    tls_config_set_key_file(tlscfg, keyfile) ||
+		    tls_config_set_cert_file(tlscfg, certfile) ||
+		    tls_configure(listen_watcher.tlsctx, tlscfg))
+			croak("TLS configuration error");
+		tls_config_free(tlscfg);
 	} else
 		listen_watcher.tlsctx = NULL;
 #endif
