@@ -1,4 +1,4 @@
-#define _DEFAULT_SOURCE
+#define _POSIX_C_SOURCE 200809L
 #include <ev.h>
 #ifndef ev_io_modify
 #define ev_io_modify(ev,events_)             do { (ev)->events = (ev)->events & EV__IOFDSET | (events_); } while (0)
@@ -1452,7 +1452,6 @@ int main (int argc, char *argv[])
 			continue;
 
 		setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
-		setsockopt(lfd, SOL_SOCKET, SO_REUSEPORT, &(int){1}, sizeof(int));
 
 		if (!bind(lfd, ai->ai_addr, ai->ai_addrlen))
 			break;
