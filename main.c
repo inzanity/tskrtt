@@ -985,15 +985,26 @@ static bool process_gph_line(EV_P_ struct client *c, char *line, size_t linelen)
 		if (line[linelen - 1] == ']')
 			line[--linelen] = '\0';
 
+		if (!*type)
+			type = "i";
+		if (*type == 'i' || *type == '3') {
+			if (!resource)
+				resource = ".";
+			if (!server)
+				server = ".";
+			if (!port)
+				port = ".";
+		}
+
 		if (!resource)
 			return client_printf(c, "3Invalid line\r\n");
 
-		if (!server || !strcmp(server, "server"))
+		if (!server || !*server || !strcmp(server, "server"))
 			server = hostname;
-		else if (!port)
+		else if (!port || !*port)
 			port = dfl_port;
 
-		if (!port || !strcmp(port, "port"))
+		if (!port || !*port || !strcmp(port, "port"))
 			port = oport;
 
 		if (strpfx(resource, "URI:") || strpfx(resource, "URL:") || *resource == '/' || strcmp(server, hostname) || strcmp(port, oport))
