@@ -905,19 +905,17 @@ static size_t strnchrcnt(const char *haystack, char needle, size_t hsl)
 
 static bool process_gophermap_line(EV_P_ struct client *c, char *line, size_t linelen)
 {
+	size_t tabcount = strnchrcnt(line, '\t', linelen);
+	const char *tabstr = "\t.\t.\t.";
 	if (*line == 'i' || *line == '3')
-		return client_printf(c, "%.*s\t.\t.\t.\r\n", (int)linelen, line);
-	else {
-		size_t tabcount = strnchrcnt(line, '\t', linelen);
-
-		if (tabcount > 2)
-			return client_printf(c, "%.*s\r\n", (int)linelen, line);
-		if (tabcount > 1)
-			return client_printf(c, "%.*s\t70\r\n", (int)linelen, line);
-		if (tabcount)
-			return client_printf(c, "%.*s\t%s\t%s\r\n", (int)linelen, line, hostname, oport);
-		return client_printf(c, "i%.*s\t.\t.\t.\r\n", (int)linelen, line);
-	}
+		return client_printf(c, "%.*s%s\r\n", (int)linelen, line, tabcount < 3 ? tabstr + 2 * tabcount : "");
+	else if (tabcount > 2)
+		return client_printf(c, "%.*s\r\n", (int)linelen, line);
+	else if (tabcount > 1)
+		return client_printf(c, "%.*s\t70\r\n", (int)linelen, line);
+	else if (tabcount)
+		return client_printf(c, "%.*s\t%s\t%s\r\n", (int)linelen, line, hostname, oport);
+	return client_printf(c, "i%.*s\t.\t.\t.\r\n", (int)linelen, line);
 }
 
 static void update_gophermap(EV_P_ struct client *c, int revents)
