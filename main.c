@@ -781,6 +781,31 @@ static void init_dcgi(EV_P_ struct client *c, int fd, struct stat *sb, const cha
 	init_gph(EV_A_ c, -1, sb, path, fn, qs, ss);
 }
 
+static const char *format_size(off_t bytes)
+{
+	static char buf[64];
+	const char *mult = "kMGTPEZY";
+	if (bytes < 1024) {
+		sprintf(buf, "%ju", (uintmax_t)bytes);
+	}
+	else {
+		double b;
+		for (b = bytes / 1024;
+		     b >= 1024 && mult[1];
+		     mult++)
+			b /= 1024;
+		snprintf(buf, sizeof(buf), "%.1f%c", b, *mult);
+	}
+	return buf;
+}
+
+static const char *format_time(time_t t)
+{
+	static char buf[64];
+	strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M %Z", localtime(&t));
+	return buf;
+}
+
 static void update_dir(EV_P_ struct client *c, int revents)
 {
 	(void)revents;
@@ -791,12 +816,13 @@ static void update_dir(EV_P_ struct client *c, int revents)
 	}
 
 	for (; c->task_data.dt.i < c->task_data.dt.n; c->task_data.dt.i++) {
-		struct stat sb;
-		if (fstatat(c->task_data.dt.dfd, c->task_data.dt.entries[c->task_data.dt.i]->d_name, &sb, 0))
-			perror("fstatat");
-		if (!client_printf(c, "%c%s\t/%s%s\t%s\t%s\r\n",
+		struct stat sb = { 0 };
+		fstatat(c->task_data.dt.dfd, c->task_data.dt.entries[c->task_data.dt.i]->d_name, &sb, 0);
+		if (!client_printf(c, "%c%-50.50s %6s %-21s\t/%s%s\t%s\t%s\r\n",
 				   guess_type(c->task_data.dt.entries[c->task_data.dt.i], &sb),
 				   c->task_data.dt.entries[c->task_data.dt.i]->d_name,
+				   format_size(sb.st_size),
+				   format_time(sb.st_mtim.tv_sec),
 				   c->task_data.dt.base,
 				   c->task_data.dt.entries[c->task_data.dt.i]->d_name,
 				   hostname, oport)) {
