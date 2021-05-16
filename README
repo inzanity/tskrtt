@@ -1,0 +1,76 @@
+A gopherd for Linux (and possibly others)
+
+Features:
+	* gopher menus (gophermap or gph)
+	* dir listings
+	* CGI support
+	* access logging
+	* TLS using libtls
+
+Usage:
+	tskrtt [-46d] [-t key cert] [-l logfile] [-b rootdir] [-p port]
+	       [-o outport] [-u user] [-g group] [-h host]
+	       [-i listen address]
+	-4		Only listen for IPv4 connections.
+	
+	-6		Only listen for IPv6 connections.
+	
+	-d		Don't fork into background.
+	
+	-l logfile	Location for an access log file (no default).
+	
+	-b rootdir	Root directory of served content
+			(default: /var/gopher).
+	
+	-h host		Hostname used in generated content (default: listen
+			address or system hostname)
+	
+	-p port		Port on which the daemon will listen (default: 70).
+	
+	-o oport	Port shown on generated content (default: same as
+			port).
+	
+	-u user		Change to user after startup.
+	
+	-g group	Change to group after startup.
+	
+	-i address	Listen for incoming connections on given address
+			(default: listen on any address).
+	
+	-t key cert	Allow connections using TLS using the given key and
+			cert (default: only plain text connection).
+
+Requirements:
+	tskrtt is based on libev event loop (tested with 4.25 and 4.33). For
+	TLS support, LibreSSL libtls or libretls is required.
+
+Building:
+	Build using make. If TLS support is not wanted, edit Makefile.
+
+GPH format:
+	tskrtt supports GPH formatting and should be compatible with that
+	of geomyidae. In addition tskrtt allows for server and/or port not
+	to be defined, in which case server's hostname and port (or 70 if
+	server is defined) are used.
+
+Dynamic content:
+	Executable files ending in .cgi are run and the input is forwarded
+	to client as-is. A well behaving .cgi should output well formed
+	gopher data (for text and menu content), including using CR + LF as
+	line ending and ending transmission with a dot on an otherwise
+	empty line, and take care not to have it anywhere else in the output.
+
+	Executable files ending in .dcgi are similarily run, but they should
+	output GPH formatted text instead, which is parsed by tskrtt before
+	passing on to the client.
+
+	Note that while striving to be able to be compatible with HTTP CGI,
+	a major difference is that neither type should print HTTP headers. For
+	example a PHP script should begin with
+
+	#!/usr/bin/php-cgi --no-header
+
+	to avoid HTTP headers in the output.
+
+Reporting bugs:
+	Bugs can be reported to inz@inz.fi via email.

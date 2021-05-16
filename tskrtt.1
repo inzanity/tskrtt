@@ -1,0 +1,84 @@
+.Dd May 16, 2021
+.Dt TSKRTT 8
+.Os
+.
+.Sh NAME
+.Nm tskrtt
+.Nd a gopher daemon
+.
+.Sh SYNOPSIS
+.Nm
+.Bk -words
+.Op Fl 4
+.Op Fl 6
+.Op Fl d
+.Op Fl l Ar logfile
+.Op Fl b Ar rootdir
+.Op Fl h Ar host
+.Op Fl p Ar port
+.Op Fl o Ar outport
+.Op Fl u Ar user
+.Op Fl g Ar group
+.Op Fl i Ar listen-address
+.Op Fl t Ar key cert
+.Ek
+.
+.Sh DESCRIPTION
+.Bd -filled
+.Nm
+is a Gopher server.
+.Ed
+.
+.Sh OPTIONS
+tskrtt options and default settings:
+.Bl -tag -width Ds
+.
+.It Fl 4
+Only listen for IPv4 connections.
+.
+.It Fl 6
+Only listen for IPv6 connections.
+.
+.It Fl d
+Don't fork into background.
+.
+.It Fl l Ar logfile
+Location for an access log file (no default).
+.
+.It Fl b Ar rootdir
+Root directory of served content (default: /var/gopher).
+.
+.It Fl h Ar host
+Hostname used in generated content (default: listen address or system hostname)
+.
+.It Fl p Ar port
+Port on which the daemon will listen (default: 70).
+.
+.It Fl o Ar oport
+Port shown on generated content (default: same as port).
+.
+.It Fl u Ar user
+Change to user after startup.
+.
+.It Fl g Ar group
+Change to group after startup.
+.
+.It Fl i Ar listen-address
+Listen for incoming connections on given address (default: listen on any address).
+.
+.If Fl t Ar key cert
+Allow connections using TLS using the given key and cert (default: only plain text connection).
+.
+.Sh KNOWN BUGS
+Served text, gophermap and .gph and .dcgi lines can only have line length of 511 characters, longer lines are wrapped, which may break .gph formatting. This should pose no problems, as any gopher content shouldn't exceed 70 characters.
+.Pp
+If listen address resolves into multiple available addresses, only the first successful one will be listened to.
+.Pp
+Any headers received from CGI/DCGI will be passed onto the client, which is probably not what is wanted.
+.
+.Sh CONFORMING TO
+The daemon strives to conform to RFC 1436 and to be reasonably compatible with geomyidae server
+.
+.Sh SEE ALSO
+.Xr geomyidae 8
+.

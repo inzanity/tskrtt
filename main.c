@@ -1330,6 +1330,14 @@ static void listen_cb(EV_P_ ev_io *w, int revents)
 
 static void usage(void)
 {
+	fprintf(stderr,
+		"usage: %s [-46d] "
+#ifdef USE_TLS
+		"[-t key cert] "
+#endif
+		"[-l logfile] [-b rootdir] [-p port] [-o outport] "
+		"[-u user] [-g group] [-h host] [-i listen address]\n",
+		argv0);
 	exit(1);
 }
 
@@ -1400,6 +1408,9 @@ int main (int argc, char *argv[])
 			break;
 		case 'l':
 			logfile = EARGF(usage());
+			break;
+		default:
+			usage();
 			break;
 	} ARGEND;
 
