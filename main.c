@@ -439,7 +439,8 @@ static char *cleanup_path(char *path, char **basename, size_t *pathlen)
 
 	if (r == *pathlen) {
 		*pathlen = 0;
-		*basename = path;
+		if (basename)
+			*basename = path;
 		return path;
 	}
 
@@ -474,10 +475,12 @@ static char *cleanup_path(char *path, char **basename, size_t *pathlen)
 			path[w++] = path[r++];
 	}
 
-	if (np)
-		*basename = path + parts[np - 1];
-	else
-		*basename = path;
+	if (basename) {
+		if (np)
+			*basename = path + parts[np - 1];
+		else
+			*basename = path;
+	}
 
 	if (w && path[w - 1] == '/')
 		w--;
@@ -1492,8 +1495,15 @@ int main (int argc, char *argv[])
 			croak("setuid failed");
 	}
 
-	if (*gopherroot != '/')
-		gopherroot = realpath(gopherroot, gopherrootbuf);
+	if (*gopherroot != '/' && getcwd(gopherrootbuf, sizeof(gopherrootbuf))) {
+		size_t l = strlen(gopherrootbuf);
+		int ll = snprintf(gopherrootbuf + l, sizeof(gopherrootbuf) - l, "/%s", gopherroot);
+		if ((l += ll - 1) < sizeof(gopherrootbuf) - 1 && cleanup_path(gopherrootbuf + 1, NULL, &l)) {
+			gopherrootbuf[l + 1] = '\0';
+			gopherroot = gopherrootbuf;
+		}
+
+	}
 
 	if (dofork) {
 		if (fork()) {
