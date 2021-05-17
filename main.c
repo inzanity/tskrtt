@@ -221,7 +221,10 @@ bool strpfx(const char *haystack, const char *needle)
 
 static inline void *xmemdup(const void *p, size_t l)
 {
-	return memcpy(malloc(l), p, l);
+	void *m = malloc(l);
+	if (!m)
+		return NULL;
+	return memcpy(m, p, l);
 }
 
 static int filterdot(const struct dirent *e)
@@ -237,25 +240,46 @@ static int xfdscandir(int dfd, struct dirent ***namelist, int (*filter)(const st
 	struct dirent *e;
 
 	d = fdopendir(dfd);
-	if (!d)
+	if (!d) {
+		*namelist = NULL;
 		return 0;
+	}
 
 	*namelist = malloc(sz * sizeof(**namelist));
+
+	if (!*namelist)
+		goto err;
 
 	while ((e = readdir(d))) {
 		size_t nl = strlen(e->d_name);
 		if (filter && !filter(e))
 			continue;
-		if (n == sz)
-			*namelist = realloc(*namelist, (sz *= 2) * sizeof(**namelist));
-		(*namelist)[n++] = xmemdup(e, FOFFSET(struct dirent, d_name) + nl + 1);
+		if (n == sz) {
+			void *np = realloc(*namelist, (sz *= 2) * sizeof(**namelist));
+			if (!np)
+				goto err;
+			*namelist = np;
+		}
+		if (!((*namelist)[n] = xmemdup(e, FOFFSET(struct dirent, d_name) + nl + 1)))
+			goto err;
+		n++;
 	}
+
 	closedir(d);
 
-	*namelist = realloc(*namelist, n * sizeof(**namelist));
 	qsort(*namelist, n, sizeof(**namelist), (int (*)(const void *, const void *))compar);
 
 	return n;
+
+err:
+	while (n--)
+		free((*namelist)[n]);
+	free(*namelist);
+	*namelist = NULL;
+
+	closedir(d);
+
+	return 0;
 }
 
 static char *dupensurepath(const char *w)
@@ -267,7 +291,10 @@ static char *dupensurepath(const char *w)
 		return strdup("");
 	if (w[l - 1] == '/')
 		l--;
-	rv = memcpy(malloc(l + 2), w, l);
+	rv = malloc(l + 2);
+	if (!rv)
+		return rv;
+	memcpy(rv, w, l);
 	rv[l++] = '/';
 	rv[l] = '\0';
 	return rv;
@@ -280,7 +307,10 @@ static char *dupdirname(const char *w)
 
 	if (!ls++)
 		return strdup("");
-	rv = memcpy(malloc(ls - w + 1), w, ls - w);
+	rv = malloc(ls - w + 1);
+	if (!rv)
+		return rv;
+	memcpy(rv, w, ls - w);
 	rv[ls - w] = '\0';
 	return rv;
 }
@@ -305,6 +335,8 @@ static char *joinstr(const char *a, const char *b, char separator)
 	if (!b)
 		return strdup(a);
 	rv = malloc(strlen(a) + strlen(b) + 2);
+	if (!rv)
+		return NULL;
 	sprintf(rv, "%s%c%s", a, separator, b);
 	return rv;
 }
@@ -552,8 +584,8 @@ static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char
 	c->task_data.dt.base = dupensurepath(path);
 	if (*path)
 		client_printf(c, "1..\t/%.*s\t%s\t%s\r\n", (int)(fn - path), path, hostname, oport);
-	c->task_data.dt.dfd = dup(fd);
-	c->task_data.dt.n = xfdscandir(fd, &c->task_data.dt.entries, filterdot, alphasort);
+	c->task_data.dt.dfd = fd;
+	c->task_data.dt.n = xfdscandir(dup(fd), &c->task_data.dt.entries, filterdot, alphasort);
 	c->task_data.dt.i = 0;
 }
 
@@ -678,6 +710,7 @@ static void read_cgi(EV_P_ ev_io *w, int revents)
 	if (r <= 0) {
 		close(c->task_data.ct.rfd);
 		c->task_data.ct.rfd = -1;
+		ev_io_stop(EV_A_ &c->task_data.ct.input_watcher);
 		ev_io_start(EV_A_ &c->watcher);
 
 		return;
@@ -714,7 +747,8 @@ static void init_cgi_common(EV_P_ struct client *c, struct cgi_task *ct, int fd,
 	(void)fn;
 
 	if (pipe(pfd)) {
-		client_close(EV_A_ c);
+		client_printf(c, "3Internal server error\t.\t.\t.\r\n.\r\n");
+		c->task = TASK_ERROR;
 		return;
 	}
 
@@ -722,9 +756,11 @@ static void init_cgi_common(EV_P_ struct client *c, struct cgi_task *ct, int fd,
 	case 0:
 		break;
 	case -1:
+		close(fd);
 		close(pfd[0]);
 		close(pfd[1]);
-		client_close(EV_A_ c);
+		client_printf(c, "3Internal server error\t.\t.\t.\r\n.\r\n");
+		c->task = TASK_ERROR;
 		return;
 	default:
 		close(fd);
@@ -972,6 +1008,7 @@ static bool process_gophermap_line(struct client *c, char *line, size_t linelen)
 		return client_printf(c, "%.*s\t70\r\n", (int)linelen, line);
 	else if (tabcount)
 		return client_printf(c, "%.*s\t%s\t%s\r\n", (int)linelen, line, hostname, oport);
+
 	return client_printf(c, "i%.*s\t.\t.\t.\r\n", (int)linelen, line);
 }
 
@@ -1396,14 +1433,29 @@ static void child_timeout(EV_P_ ev_timer *w, int revents)
 
 static void listen_cb(EV_P_ ev_io *w, int revents)
 {
+	struct sockaddr_storage addr;
+	socklen_t addrlen = sizeof(addr);
 	struct listener *l = (struct listener *)w;
-	struct client *c = malloc(sizeof(*c));
+	int fd;
+	struct client *c;
 
-	c->addrlen = sizeof(c->addr);
 
 	(void)revents;
 
-	c->fd = accept(l->fd, (struct sockaddr *)&c->addr, &c->addrlen);
+	fd = accept(l->fd, (struct sockaddr *)&addr, &addrlen);
+
+	if (fd < 0)
+		return;
+
+	c = malloc(sizeof(*c));
+	if (!c) {
+		close(fd);
+		return;
+	}
+
+	memcpy(&c->addr, &addr, addrlen);
+	c->addrlen = addrlen;
+	c->fd = fd;
 
 	fcntl(c->fd, F_SETFL, O_NONBLOCK);
 	c->buffer_used = 0;
@@ -1582,7 +1634,6 @@ int main (int argc, char *argv[])
 			gopherrootbuf[l + 1] = '\0';
 			gopherroot = gopherrootbuf;
 		}
-
 	}
 
 	if (dofork) {
