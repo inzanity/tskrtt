@@ -984,10 +984,10 @@ static char *strunesctok(char *str, char *delim, char esc)
 	rv = state;
 
 	for (w = state; *state && !strchr(delim, *state);) {
-		if (*state == esc)
+		if (*state == esc && state[1] &&
+		    (state[1] == esc ||
+		    strchr(delim, state[1])))
 			state++;
-		if (!*state)
-			break;
 		*w++ = *state++;
 	}
 
