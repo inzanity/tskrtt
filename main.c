@@ -1219,11 +1219,17 @@ static void update_read(EV_P_ struct client *c, int revents)
 
 		int dfd = open(gopherroot, O_RDONLY | O_DIRECTORY);
 		if (dfd >= 0) {
-			if (strsfx(bn, ".cgi") && !faccessat(dfd, p, X_OK, 0)) {
-				c->task = TASK_CGI;
-				tasks[c->task].init(EV_A_ c, dfd, NULL, p, bn, qs, ss);
-			} else if (strsfx(bn, ".dcgi") && !faccessat(dfd, p, X_OK, 0)) {
-				c->task = TASK_DCGI;
+			if ((strsfx(bn, ".cgi") || strsfx(bn, ".dcgi")) && !faccessat(dfd, p, X_OK, 0)) {
+				c->task = strsfx(bn, ".dcgi") ? TASK_DCGI : TASK_CGI;
+				if (bn > p) {
+					int t;
+					bn[-1] = '\0';
+					if ((t = openat(dfd, p, O_RDONLY | O_DIRECTORY) >= 0)) {
+						close(dfd);
+						dfd = t;
+					}
+					bn[-1] = '/';
+				}
 				tasks[c->task].init(EV_A_ c, dfd, NULL, p, bn, qs, ss);
 			} else {
 				int ffd = openat(dfd, rl ? p : ".", O_RDONLY);
