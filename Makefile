@@ -1,13 +1,15 @@
-LDFLAGS += -lev -ltls
-CFLAGS += -W -Wall -std=c99 -DUSE_TLS -g -O0
+LDFLAGS = -L/usr/local/lib -lev -ltls
+CFLAGS = -W -Wall -std=c99 -DUSE_TLS -I/usr/local/include
 SOURCES := main.c
-OBJS := $(patsubst %.c,%.o,$(SOURCES))
+OBJS := ${SOURCES:.c=.o}
 
 all: tskrtt
 
-tskrtt: $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS)
+tskrtt: ${OBJS}
+	${CC} ${CFLAGS} -o $@ ${OBJS} ${LDFLAGS}
 
+.c.o:
+	${CC} ${CFLAGS} -c $< -o $@
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+clean:
+	rm -f ${OBJS}
