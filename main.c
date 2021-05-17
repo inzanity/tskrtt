@@ -534,6 +534,10 @@ static char guess_type(struct dirent *e, struct stat *s)
 	    strsfx(e->d_name, ".png") ||
 	    strsfx(e->d_name, ".jpeg"))
 		return 'I';
+	if (strsfx(e->d_name, ".cgi") ||
+	    strsfx(e->d_name, ".dcgi") ||
+	    strsfx(e->d_name, ".gph"))
+		return '1';
 
 	return '9';
 }
