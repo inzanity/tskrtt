@@ -28,6 +28,12 @@
 #include <tls.h>
 #endif
 
+#if EV_MULTIPLICITY
+# define EV_UNUSED (void)EV_A
+#else
+# define EV_UNUSED
+#endif
+
 #include "arg.h"
 
 char dfl_hostname[128];
@@ -526,6 +532,7 @@ static char guess_type(struct dirent *e, struct stat *s)
 
 static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
+	EV_UNUSED;
 	(void)sb;
 	(void)qs;
 	(void)ss;
@@ -543,32 +550,38 @@ static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char
 
 static void init_text(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
+	EV_UNUSED;
 	(void)sb;
 	(void)path;
 	(void)fn;
 	(void)qs;
 	(void)ss;
+
 	c->task_data.tt.rfd = fd;
 	c->task_data.tt.used = 0;
 }
 
 static void init_gophermap(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
+	EV_UNUSED;
 	(void)sb;
 	(void)path;
 	(void)fn;
 	(void)qs;
 	(void)ss;
+
 	c->task_data.tt.rfd = fd;
 	c->task_data.tt.used = 0;
 }
 
 static void init_gph(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
+	EV_UNUSED;
 	(void)sb;
 	(void)fn;
 	(void)qs;
 	(void)ss;
+
 	c->task_data.gpht.rfd = fd;
 	c->task_data.gpht.base = dupdirname(path);
 	c->task_data.gpht.used = 0;
@@ -608,6 +621,7 @@ static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const c
 
 static void init_error(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
+	EV_UNUSED;
 	(void)c;
 	(void)fd;
 	(void)sb;
@@ -619,6 +633,7 @@ static void init_error(EV_P_ struct client *c, int fd, struct stat *sb, const ch
 
 static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
 {
+	EV_UNUSED;
 	(void)fd;
 	(void)sb;
 	(void)path;
@@ -674,6 +689,7 @@ static void reap_cgi(EV_P_ ev_child *w, int revent)
 {
 	struct cgi_task *ct = PTR_FROM_FIELD(struct cgi_task, input_watcher, w);
 
+	EV_UNUSED;
 	(void)revent;
 
 	ct->pid = 0;
@@ -861,7 +877,7 @@ static void update_redirect(EV_P_ struct client *c, int revents)
 	client_close(EV_A_ c);
 }
 
-static bool line_foreach(EV_P_ int fd, char *buffer, size_t buffer_size, size_t *buffer_used, bool (*line_cb)(EV_P_ struct client *c, char *line, size_t linelen), struct client *c)
+static bool line_foreach(int fd, char *buffer, size_t buffer_size, size_t *buffer_used, bool (*line_cb)(struct client *c, char *line, size_t linelen), struct client *c)
 {
 	int r;
 	char *nl;
@@ -871,7 +887,7 @@ static bool line_foreach(EV_P_ int fd, char *buffer, size_t buffer_size, size_t 
 		r = read(fd, buffer + *buffer_used, buffer_size - *buffer_used);
 		if (r <= 0) {
 			if (*buffer_used)
-				return !line_cb(EV_A_ c, buffer, *buffer_used);
+				return !line_cb(c, buffer, *buffer_used);
 			return false;
 		}
 
@@ -881,7 +897,7 @@ static bool line_foreach(EV_P_ int fd, char *buffer, size_t buffer_size, size_t 
 	nl = memchr(buffer, '\n', *buffer_used);
 
 	if (!nl) {
-		if (*buffer_used == buffer_size && line_cb(EV_A_ c, buffer, buffer_size))
+		if (*buffer_used == buffer_size && line_cb(c, buffer, buffer_size))
 			*buffer_used = 0;
 		return true;
 	}
@@ -892,7 +908,7 @@ static bool line_foreach(EV_P_ int fd, char *buffer, size_t buffer_size, size_t 
 		if (t > bp && t[-1] == '\r')
 			t--;
 
-		if (!line_cb(EV_A_ c, bp, t - bp))
+		if (!line_cb(c, bp, t - bp))
 			break;
 
 		bp = nl + 1;
@@ -904,7 +920,7 @@ static bool line_foreach(EV_P_ int fd, char *buffer, size_t buffer_size, size_t 
 	return true;
 }
 
-static bool process_text_line(EV_P_ struct client *c, char *line, size_t linelen)
+static bool process_text_line(struct client *c, char *line, size_t linelen)
 {
 	if (linelen == 1 && *line == '.')
 		return client_printf(c, "..\r\n");
@@ -920,7 +936,7 @@ static void update_text(EV_P_ struct client *c, int revents)
 		return;
 	}
 
-	if (!line_foreach(EV_A_ c->task_data.tt.rfd, c->task_data.tt.linebuf, sizeof(c->task_data.tt.linebuf), &c->task_data.tt.used, process_text_line, c)) {
+	if (!line_foreach(c->task_data.tt.rfd, c->task_data.tt.linebuf, sizeof(c->task_data.tt.linebuf), &c->task_data.tt.used, process_text_line, c)) {
 		if (!client_printf(c, ".\r\n"))
 			return;
 
@@ -937,10 +953,11 @@ static size_t strnchrcnt(const char *haystack, char needle, size_t hsl)
 	return n;
 }
 
-static bool process_gophermap_line(EV_P_ struct client *c, char *line, size_t linelen)
+static bool process_gophermap_line(struct client *c, char *line, size_t linelen)
 {
 	size_t tabcount = strnchrcnt(line, '\t', linelen);
 	const char *tabstr = "\t.\t.\t.";
+
 	if (*line == 'i' || *line == '3')
 		return client_printf(c, "%.*s%s\r\n", (int)linelen, line, tabcount < 3 ? tabstr + 2 * tabcount : "");
 	else if (tabcount > 2)
@@ -961,7 +978,7 @@ static void update_gophermap(EV_P_ struct client *c, int revents)
 		return;
 	}
 
-	if (!line_foreach(EV_A_ c->task_data.tt.rfd, c->task_data.tt.linebuf, sizeof(c->task_data.tt.linebuf), &c->task_data.tt.used, process_gophermap_line, c)) {
+	if (!line_foreach(c->task_data.tt.rfd, c->task_data.tt.linebuf, sizeof(c->task_data.tt.linebuf), &c->task_data.tt.used, process_gophermap_line, c)) {
 		if (!client_printf(c, ".\r\n"))
 			return;
 
@@ -1001,7 +1018,7 @@ static char *strunesctok(char *str, char *delim, char esc)
 	return rv;
 }
 
-static bool process_gph_line(EV_P_ struct client *c, char *line, size_t linelen)
+static bool process_gph_line(struct client *c, char *line, size_t linelen)
 {
 	line[linelen] = '\0';
 
@@ -1057,7 +1074,7 @@ static void update_gph(EV_P_ struct client *c, int revents)
 		return;
 	}
 
-	if (!line_foreach(EV_A_ c->task_data.gpht.rfd, c->task_data.gpht.linebuf, sizeof(c->task_data.gpht.linebuf) - 1, &c->task_data.gpht.used, process_gph_line, c)) {
+	if (!line_foreach(c->task_data.gpht.rfd, c->task_data.gpht.linebuf, sizeof(c->task_data.gpht.linebuf) - 1, &c->task_data.gpht.used, process_gph_line, c)) {
 		if (!client_printf(c, ".\r\n"))
 			return;
 
@@ -1244,7 +1261,7 @@ static void read_dcgi(EV_P_ ev_io *w, int revents)
 
 	(void)revents;
 
-	if (!line_foreach(EV_A_ c->task_data.dct.ct.rfd, c->task_data.dct.gpht.linebuf, sizeof(c->task_data.dct.gpht.linebuf) - 1, &c->task_data.dct.gpht.used, process_gph_line, c)) {
+	if (!line_foreach(c->task_data.dct.ct.rfd, c->task_data.dct.gpht.linebuf, sizeof(c->task_data.dct.gpht.linebuf) - 1, &c->task_data.dct.gpht.used, process_gph_line, c)) {
 		if (!client_printf(c, ".\r\n"))
 			return;
 
@@ -1271,11 +1288,13 @@ static void update_dcgi(EV_P_ struct client *c, int revents)
 
 static void finish_read(EV_P_ struct client *c)
 {
+	EV_UNUSED;
 	(void)c;
 }
 
 static void finish_dir(EV_P_ struct client *c)
 {
+	EV_UNUSED;
 	for (; c->task_data.dt.i < c->task_data.dt.n; c->task_data.dt.i++)
 		free(c->task_data.dt.entries[c->task_data.dt.i]);
 	free(c->task_data.dt.entries);
@@ -1285,18 +1304,21 @@ static void finish_dir(EV_P_ struct client *c)
 
 static void finish_text(EV_P_ struct client *c)
 {
+	EV_UNUSED;
 	if (c->task_data.tt.rfd >= 0)
 		close(c->task_data.tt.rfd);
 }
 
 static void finish_gophermap(EV_P_ struct client *c)
 {
+	EV_UNUSED;
 	if (c->task_data.tt.rfd >= 0)
 		close(c->task_data.tt.rfd);
 }
 
 static void finish_gph(EV_P_ struct client *c)
 {
+	EV_UNUSED;
 	if (c->task_data.gpht.rfd >= 0)
 		close(c->task_data.gpht.rfd);
 	free(c->task_data.gpht.base);
@@ -1304,16 +1326,19 @@ static void finish_gph(EV_P_ struct client *c)
 
 static void finish_binary(EV_P_ struct client *c)
 {
+	EV_UNUSED;
 	close(c->task_data.bt.rfd);
 }
 
 static void finish_error(EV_P_ struct client *c)
 {
+	EV_UNUSED;
 	(void)c;
 }
 
 static void finish_redirect(EV_P_ struct client *c)
 {
+	EV_UNUSED;
 	(void)c;
 }
 
@@ -1402,7 +1427,9 @@ int main (int argc, char *argv[])
 	struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_flags = AI_PASSIVE, .ai_socktype = SOCK_STREAM };
 	struct addrinfo *addrs;
 	struct addrinfo *ai;
-	struct ev_loop *loop = EV_DEFAULT;
+#if EV_MULTIPLICITY
+	EV_P = EV_DEFAULT;
+#endif
 	const char *bindto = NULL;
 	const char *port = dfl_port;
 	const char *user = NULL;
@@ -1553,9 +1580,9 @@ int main (int argc, char *argv[])
 
 	listen_watcher.fd = lfd;
 	ev_io_init(&listen_watcher.watcher, listen_cb, lfd, EV_READ);
-	ev_io_start(loop, &listen_watcher.watcher);
+	ev_io_start(EV_A_ &listen_watcher.watcher);
 
-	ev_run (loop, 0);
+	ev_run(EV_A_ 0);
 
 #ifdef USE_TLS
 	if (listen_watcher.tlsctx)
