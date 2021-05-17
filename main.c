@@ -118,6 +118,7 @@ enum tls_state {
 #endif
 
 struct client {
+	bool broken_client;
 	ev_io watcher;
 	ev_timer timeout;
 	struct sockaddr_storage addr;
@@ -389,13 +390,20 @@ static void accesslog(struct client *c, const char *resource, const char *qs, co
 
 static bool client_printf(struct client *c, const char *fmt, ...)
 {
-	int n;
+	int n = 0;
 	va_list args;
+
+	if (c->broken_client) {
+		n += snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "+INFO: ");
+		if (c->buffer_used + n >= sizeof(c->buffer))
+			return false;
+	}
+
 	va_start(args, fmt);
-	n = vsnprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, fmt, args);
+	n += vsnprintf(c->buffer + c->buffer_used + n, sizeof(c->buffer) - c->buffer_used - n, fmt, args);
 	va_end(args);
 
-	if (n < 0 || (size_t)n > sizeof(c->buffer) - c->buffer_used)
+	if (n < 0 || n + c->buffer_used >= sizeof(c->buffer))
 		return false;
 
 	c->buffer_used += n;
@@ -538,11 +546,8 @@ static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char
 	(void)ss;
 
 	c->task_data.dt.base = dupensurepath(path);
-	if (*path) {
-		char b[fn - path];
-		memcpy(b, path, fn - path);
-		client_printf(c, "1..\t/%.*s\t%s\t%s\r\n", (int)(fn - path), b, hostname, oport);
-	}
+	if (*path)
+		client_printf(c, "1..\t/%.*s\t%s\t%s\r\n", (int)(fn - path), path, hostname, oport);
 	c->task_data.dt.dfd = dup(fd);
 	c->task_data.dt.n = xfdscandir(fd, &c->task_data.dt.entries, filterdot, alphasort);
 	c->task_data.dt.i = 0;
@@ -640,10 +645,7 @@ static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const
 	(void)qs;
 	(void)ss;
 
-	size_t fnl = strlen(fn);
-	char b[fnl + 1];
-	strcpy(b, fn);
-	c->buffer_used = sprintf(c->buffer,
+	client_printf(c,
 				 "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">\r\n"
 				 "<html>\r\n"
 				 "	<head>\r\n"
@@ -654,7 +656,7 @@ static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const
 				 "		<p>Redirecting to <a href=\"%s\">%s</a></p>\r\n"
 				 "	</body>\r\n"
 				 "</html>\r\n",
-				 b, b, b);
+				 fn, fn, fn);
 }
 
 static char *envstr(const char *key, const char *value)
@@ -1156,6 +1158,7 @@ static void update_read(EV_P_ struct client *c, int revents)
 	}
 
 	if ((nl = memchr(c->buffer + c->buffer_used, '\n', r))) {
+		char buffer[nl - c->buffer + 1];
 		char *p;
 		char *bn;
 		char *qs;
@@ -1163,39 +1166,50 @@ static void update_read(EV_P_ struct client *c, int revents)
 		const char *uri;
 		size_t rl;
 
+		memcpy(buffer, c->buffer, nl - c->buffer);
+		nl += buffer - c->buffer;
+		c->buffer_used = 0;
+		c->broken_client = false;
+
 		ev_io_stop(EV_A_ &c->watcher);
 		ev_io_modify(&c->watcher, EV_WRITE);
 		ev_io_start(EV_A_ &c->watcher);
 
-		if (nl > c->buffer && nl[-1] == '\r')
+		if (nl > buffer && nl[-1] == '\r')
 			nl--;
 		*nl = '\0';
 
-		ss = memchr(c->buffer, '\t', nl - c->buffer);
+		ss = memchr(buffer, '\t', nl - buffer);
 
 		if (ss) {
-			rl = ss - c->buffer;
+			rl = ss - buffer;
 			*ss++ = '\0';
 		} else
-			rl = nl - c->buffer;
+			rl = nl - buffer;
 
-		qs = memchr(c->buffer, '?', rl);
+		qs = memchr(buffer, '?', rl);
 
 		if (qs) {
-			rl = qs - c->buffer;
+			rl = qs - buffer;
 			*qs++ = '\0';
 		}
 
-		c->buffer[rl] = '\0';
-		accesslog(c, c->buffer, qs, ss);
+		buffer[rl] = '\0';
 
-		if ((uri = strnpfx(c->buffer, rl, "URI:")) || (uri = strnpfx(c->buffer, rl, "URL:"))) {
+		accesslog(c, buffer, qs, ss);
+
+		if (ss && !strcmp(ss, "$")) {
+			client_printf(c, "+-1\r\n");
+			c->broken_client = true;
+		}
+
+		if ((uri = strnpfx(buffer, rl, "URI:")) || (uri = strnpfx(buffer, rl, "URL:"))) {
 			c->task = TASK_REDIRECT;
-			tasks[c->task].init(EV_A_ c, -1, NULL, c->buffer, uri, qs, ss);
+			tasks[c->task].init(EV_A_ c, -1, NULL, buffer, uri, qs, ss);
 			return;
 		}
 
-		p = cleanup_path(c->buffer, &bn, &rl);
+		p = cleanup_path(buffer, &bn, &rl);
 		if (!p) {
 			client_close(EV_A_ c);
 			return;
@@ -1217,17 +1231,15 @@ static void update_read(EV_P_ struct client *c, int revents)
 					struct stat sb;
 
 					fstat(ffd, &sb);
-
-					c->buffer_used = 0;
 					guess_task(EV_A_ c, ffd, &sb, p, bn, qs, ss);
 				} else {
-					c->buffer_used = sprintf(c->buffer, "3Resource not found\r\n.\r\n");
+					client_printf(c, "3Resource not found\r\n.\r\n");
 					c->task = TASK_ERROR;
 				}
 			}
 			close(dfd);
 		} else {
-			c->buffer_used = sprintf(c->buffer, "3Internal server error\r\n.\r\n");
+			client_printf(c, "3Internal server error\r\n.\r\n");
 			c->task = TASK_ERROR;
 		}
 
@@ -1237,8 +1249,8 @@ static void update_read(EV_P_ struct client *c, int revents)
 	c->buffer_used += r;
 
 	if (c->buffer_used == sizeof(c->buffer)) {
-		c->buffer_used = sprintf(c->buffer, "3Request size too large\r\n.\r\n");
-		client_close(EV_A_ c);
+		client_printf(c, "3Request size too large\r\n.\r\n");
+		c->task = TASK_ERROR;
 	}
 }
 
