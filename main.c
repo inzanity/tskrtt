@@ -442,6 +442,18 @@ static bool client_printf(struct client *c, const char *fmt, ...)
 	return true;
 }
 
+static bool client_eos(struct client *c)
+{
+	const char eos[] = ".\r\n";
+
+	if (c->buffer_used + sizeof(eos) - 1 > sizeof(c->buffer))
+		return false;
+
+	memcpy(c->buffer + c->buffer_used, eos, sizeof(eos) - 1);
+	c->buffer_used += sizeof(eos) - 1;
+	return true;
+}
+
 static int client_write(struct client *c, void *buffer, size_t n)
 {
 #ifdef USE_TLS
@@ -891,7 +903,7 @@ static void update_dir(EV_P_ struct client *c, int revents)
 		free(c->task_data.dt.entries[c->task_data.dt.i]);
 	}
 
-	if (client_printf(c, ".\r\n"))
+	if (client_eos(c))
 		c->task_data.dt.i++;
 }
 
@@ -979,7 +991,7 @@ static void update_text(EV_P_ struct client *c, int revents)
 	}
 
 	if (!line_foreach(c->task_data.tt.rfd, c->task_data.tt.linebuf, sizeof(c->task_data.tt.linebuf), &c->task_data.tt.used, process_text_line, c)) {
-		if (!client_printf(c, ".\r\n"))
+		if (!client_eos(c))
 			return;
 
 		close(c->task_data.tt.rfd);
@@ -1022,7 +1034,7 @@ static void update_gophermap(EV_P_ struct client *c, int revents)
 	}
 
 	if (!line_foreach(c->task_data.tt.rfd, c->task_data.tt.linebuf, sizeof(c->task_data.tt.linebuf), &c->task_data.tt.used, process_gophermap_line, c)) {
-		if (!client_printf(c, ".\r\n"))
+		if (!client_eos(c))
 			return;
 
 		close(c->task_data.tt.rfd);
@@ -1118,7 +1130,7 @@ static void update_gph(EV_P_ struct client *c, int revents)
 	}
 
 	if (!line_foreach(c->task_data.gpht.rfd, c->task_data.gpht.linebuf, sizeof(c->task_data.gpht.linebuf) - 1, &c->task_data.gpht.used, process_gph_line, c)) {
-		if (!client_printf(c, ".\r\n"))
+		if (!client_eos(c))
 			return;
 
 		close(c->task_data.gpht.rfd);
@@ -1321,7 +1333,7 @@ static void read_dcgi(EV_P_ ev_io *w, int revents)
 	(void)revents;
 
 	if (!line_foreach(c->task_data.dct.ct.rfd, c->task_data.dct.gpht.linebuf, sizeof(c->task_data.dct.gpht.linebuf) - 1, &c->task_data.dct.gpht.used, process_gph_line, c)) {
-		if (!client_printf(c, ".\r\n"))
+		if (!client_eos(c))
 			return;
 
 		close(c->task_data.dct.ct.rfd);
