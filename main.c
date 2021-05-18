@@ -442,6 +442,28 @@ static bool client_printf(struct client *c, const char *fmt, ...)
 	return true;
 }
 
+static void client_error(EV_P_ struct client *c, const char *fmt, ...)
+{
+	va_list args;
+	int n;
+
+	if (tasks[c->task].finish)
+		tasks[c->task].finish(EV_A_ c);
+	c->task = TASK_ERROR;
+
+	client_printf(c, "3");
+
+	va_start(args, fmt);
+	n = vsnprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, fmt, args);
+	va_end(args);
+
+	if (c->buffer_used + n >= sizeof(c->buffer))
+		return;
+
+	c->buffer_used += n;
+	c->buffer_used += snprintf(c->buffer + c->buffer_used, sizeof(c->buffer) - c->buffer_used, "\t.\t.\t.\r\n.\r\n");
+}
+
 static bool client_eos(struct client *c)
 {
 	const char eos[] = ".\r\n";
@@ -759,8 +781,7 @@ static void init_cgi_common(EV_P_ struct client *c, struct cgi_task *ct, int fd,
 	(void)fn;
 
 	if (pipe(pfd)) {
-		client_printf(c, "3Internal server error\t.\t.\t.\r\n.\r\n");
-		c->task = TASK_ERROR;
+		client_error(EV_A_ c, "Internal server error");
 		return;
 	}
 
@@ -771,8 +792,7 @@ static void init_cgi_common(EV_P_ struct client *c, struct cgi_task *ct, int fd,
 		close(fd);
 		close(pfd[0]);
 		close(pfd[1]);
-		client_printf(c, "3Internal server error\t.\t.\t.\r\n.\r\n");
-		c->task = TASK_ERROR;
+		client_error(EV_A_ c, "Internal server error");
 		return;
 	default:
 		close(fd);
@@ -837,6 +857,10 @@ static void init_cgi_common(EV_P_ struct client *c, struct cgi_task *ct, int fd,
 	env[nenv++] = NULL;
 
 	execle(file, file, ss ? ss : "", qs ? qs : "", hostname, oport, (char *)NULL, env);
+	if (&c->task_data.ct == ct)
+		printf("3Internal server error\t.\t.\t.\r\n.\r\n");
+	else
+		printf("[3|Internal server error]");
 	exit(1);
 }
 
@@ -857,8 +881,7 @@ static const char *format_size(off_t bytes)
 	const char *mult = "kMGTPEZY";
 	if (bytes < 1024) {
 		sprintf(buf, "%ju", (uintmax_t)bytes);
-	}
-	else {
+	} else {
 		double b;
 		for (b = bytes / 1024;
 		     b >= 1024 && mult[1];
@@ -898,7 +921,7 @@ static void update_dir(EV_P_ struct client *c, int revents)
 				   hostname, oport)) {
 			if (c->buffer_used)
 				return;
-			client_printf(c, "3Filename too long\r\n");
+			client_printf(c, "3Filename too long\t.\t.\t.\r\n");
 		}
 		free(c->task_data.dt.entries[c->task_data.dt.i]);
 	}
@@ -1103,7 +1126,7 @@ static bool process_gph_line(struct client *c, char *line, size_t linelen)
 		}
 
 		if (!resource)
-			return client_printf(c, "3Invalid line\r\n");
+			return client_printf(c, "3Invalid line\t.\t.\t.\r\n");
 
 		if (!server || !*server || !strcmp(server, "server"))
 			server = hostname;
@@ -1264,7 +1287,7 @@ static void update_read(EV_P_ struct client *c, int revents)
 
 		p = cleanup_path(buffer, &bn, &rl);
 		if (!p) {
-			client_close(EV_A_ c);
+			client_error(EV_A_ c, "Invalid path");
 			return;
 		}
 
@@ -1292,14 +1315,12 @@ static void update_read(EV_P_ struct client *c, int revents)
 					fstat(ffd, &sb);
 					guess_task(EV_A_ c, ffd, &sb, p, bn, qs, ss);
 				} else {
-					client_printf(c, "3Resource not found\r\n.\r\n");
-					c->task = TASK_ERROR;
+					client_error(EV_A_ c, "Resource not found");
 				}
 			}
 			close(dfd);
 		} else {
-			client_printf(c, "3Internal server error\r\n.\r\n");
-			c->task = TASK_ERROR;
+			client_error(EV_A_ c, "Internal server error");
 		}
 
 		return;
@@ -1308,8 +1329,8 @@ static void update_read(EV_P_ struct client *c, int revents)
 	c->buffer_used += r;
 
 	if (c->buffer_used == sizeof(c->buffer)) {
-		client_printf(c, "3Request size too large\r\n.\r\n");
-		c->task = TASK_ERROR;
+		c->buffer_used = 0;
+		client_error(EV_A_ c, "Request size too large");
 	}
 }
 
