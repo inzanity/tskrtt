@@ -143,15 +143,15 @@ struct client {
 
 static void read_dcgi(EV_P_ ev_io *w, int revents);
 
-static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
-static void init_text(EV_P_ struct client *, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
-static void init_gph(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
-static void init_gophermap(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
-static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
-static void init_error(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
-static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
-static void init_cgi(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
-static void init_dcgi(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
+static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss);
+static void init_text(EV_P_ struct client *, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss);
+static void init_gph(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss);
+static void init_gophermap(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss);
+static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss);
+static void init_error(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss);
+static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss);
+static void init_cgi(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss);
+static void init_dcgi(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss);
 
 static void update_read(EV_P_ struct client *c, int events);
 static void update_dir(EV_P_ struct client *c, int events);
@@ -176,7 +176,7 @@ static void finish_cgi(EV_P_ struct client *c);
 static void finish_dcgi(EV_P_ struct client *c);
 
 static const struct {
-	void (*init)(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss);
+	void (*init)(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss);
 	void (*update)(EV_P_ struct client *c, int events);
 	void (*finish)(EV_P_ struct client *c);
 } tasks[] = {
@@ -225,6 +225,26 @@ static inline void *xmemdup(const void *p, size_t l)
 	if (!m)
 		return NULL;
 	return memcpy(m, p, l);
+}
+
+static char *xdupprintf(const char *fmt, ...)
+{
+	va_list args;
+	int n;
+	char *rv;
+
+	va_start(args, fmt);
+	n = vsnprintf(NULL, 0, fmt, args);
+	va_end(args);
+
+	if (!(rv = malloc(n + 1)))
+		return rv;
+
+	va_start(args, fmt);
+	vsnprintf(rv, n + 1, fmt, args);
+	va_end(args);
+
+	return rv;
 }
 
 static int filterdot(const struct dirent *e)
@@ -374,7 +394,7 @@ void guess_task(EV_P_ struct client *c, int fd, struct stat *sb, const char *pat
 		c->task = TASK_BINARY;
 	}
 
-	tasks[c->task].init(EV_A_ c, fd, sb, path, fn, qs, ss);
+	tasks[c->task].init(EV_A_ c, fd, sb, path, fn, NULL, qs, ss);
 
 	if (t)
 		free(t);
@@ -507,6 +527,14 @@ static bool client_flush(struct client *c)
 	return true;
 }
 
+static char *xbasename(char *file)
+{
+	char *rv = strrchr(file, '/');
+
+	if (!rv)
+		return file;
+	return rv + 1;
+}
 
 static char *cleanup_path(char *path, char **basename, size_t *pathlen)
 {
@@ -608,12 +636,13 @@ static char guess_type(struct dirent *e, struct stat *s)
 	return '9';
 }
 
-static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
+static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss)
 {
 	EV_UNUSED;
 	(void)sb;
 	(void)qs;
 	(void)ss;
+	(void)pi;
 
 	c->task_data.dt.base = dupensurepath(path);
 	if (*path)
@@ -623,7 +652,7 @@ static void init_dir(EV_P_ struct client *c, int fd, struct stat *sb, const char
 	c->task_data.dt.i = 0;
 }
 
-static void init_text(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
+static void init_text(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss)
 {
 	EV_UNUSED;
 	(void)sb;
@@ -631,12 +660,13 @@ static void init_text(EV_P_ struct client *c, int fd, struct stat *sb, const cha
 	(void)fn;
 	(void)qs;
 	(void)ss;
+	(void)pi;
 
 	c->task_data.tt.rfd = fd;
 	c->task_data.tt.used = 0;
 }
 
-static void init_gophermap(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
+static void init_gophermap(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss)
 {
 	EV_UNUSED;
 	(void)sb;
@@ -644,25 +674,27 @@ static void init_gophermap(EV_P_ struct client *c, int fd, struct stat *sb, cons
 	(void)fn;
 	(void)qs;
 	(void)ss;
+	(void)pi;
 
 	c->task_data.tt.rfd = fd;
 	c->task_data.tt.used = 0;
 }
 
-static void init_gph(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
+static void init_gph(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss)
 {
 	EV_UNUSED;
 	(void)sb;
 	(void)fn;
 	(void)qs;
 	(void)ss;
+	(void)pi;
 
 	c->task_data.gpht.rfd = fd;
 	c->task_data.gpht.base = dupdirname(path);
 	c->task_data.gpht.used = 0;
 }
 
-static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
+static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss)
 {
 	int sbsz = 0;
 
@@ -670,6 +702,7 @@ static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const c
 	(void)fn;
 	(void)qs;
 	(void)ss;
+	(void)pi;
 
 	getsockopt(c->fd, SOL_SOCKET, SO_SNDBUF, &sbsz, &(socklen_t){ sizeof(sbsz) });
 
@@ -694,7 +727,7 @@ static void init_binary(EV_P_ struct client *c, int fd, struct stat *sb, const c
 	}
 }
 
-static void init_error(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
+static void init_error(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss)
 {
 	EV_UNUSED;
 	(void)c;
@@ -704,9 +737,10 @@ static void init_error(EV_P_ struct client *c, int fd, struct stat *sb, const ch
 	(void)fn;
 	(void)qs;
 	(void)ss;
+	(void)pi;
 }
 
-static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
+static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss)
 {
 	EV_UNUSED;
 	(void)fd;
@@ -714,6 +748,7 @@ static void init_redirect(EV_P_ struct client *c, int fd, struct stat *sb, const
 	(void)path;
 	(void)qs;
 	(void)ss;
+	(void)pi;
 
 	client_printf(c,
 				 "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\" \"http://www.w3.org/TR/html4/strict.dtd\">\r\n"
@@ -768,7 +803,7 @@ static void reap_cgi(EV_P_ ev_child *w, int revent)
 	ct->pid = 0;
 }
 
-static void init_cgi_common(EV_P_ struct client *c, struct cgi_task *ct, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss, void (*read_cb)(EV_P_ ev_io *w, int revents))
+static void init_cgi_common(EV_P_ struct client *c, struct cgi_task *ct, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss, void (*read_cb)(EV_P_ ev_io *w, int revents))
 {
 	int pfd[2];
 	int nfd;
@@ -830,10 +865,17 @@ static void init_cgi_common(EV_P_ struct client *c, struct cgi_task *ct, int fd,
 	fchdir(fd);
 	close(fd);
 
+	if (!pi)
+		pi = "";
+	else
+		pi = xdupprintf("/%s", pi);
+
+	path = xdupprintf("/%s", path);
+
 	getnameinfo((struct sockaddr *)&c->addr, c->addrlen, abuf, sizeof(abuf), NULL, 0, NI_NUMERICHOST);
 	env[nenv++] = envstr("GATEWAY_INTERFACE", "CGI/1.1");
-	env[nenv++] = envstr("PATH_INFO", path);
-	env[nenv++] = envstr("PATH_TRANSLATED", file);
+	env[nenv++] = envstr("PATH_INFO", pi);
+	env[nenv++] = envstr("SCRIPT_FILENAME", file);
 	env[nenv++] = envstr("QUERY_STRING", qs);
 	env[nenv++] = envstr("SELECTOR", qs);
 	env[nenv++] = envstr("REQUEST", qs);
@@ -841,10 +883,11 @@ static void init_cgi_common(EV_P_ struct client *c, struct cgi_task *ct, int fd,
 	env[nenv++] = envstr("REMOTE_HOST", abuf);
 	env[nenv++] = envstr("REDIRECT_STATUS", "");
 	env[nenv++] = envstr("REQUEST_METHOD", "GET");
-	env[nenv++] = envstr("SCRIPT_NAME", file);
+	env[nenv++] = envstr("SCRIPT_NAME", path);
 	env[nenv++] = envstr("SERVER_NAME", hostname);
 	env[nenv++] = envstr("SERVER_PORT", oport);
 	env[nenv++] = envstr("SERVER_PROTOCOL", "gopher/1.0");
+	env[nenv++] = envstr("SERVER_SOFTWARE", "tskrtt");
 	env[nenv++] = envstr("X_GOPHER_SEARCH", ss);
 	env[nenv++] = envstr("SEARCHREQUEST", ss);
 
@@ -864,15 +907,15 @@ static void init_cgi_common(EV_P_ struct client *c, struct cgi_task *ct, int fd,
 	exit(1);
 }
 
-static void init_cgi(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
+static void init_cgi(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss)
 {
-	init_cgi_common(EV_A_ c, &c->task_data.ct, fd, sb, path, fn, qs, ss, read_cgi);
+	init_cgi_common(EV_A_ c, &c->task_data.ct, fd, sb, path, fn, pi, qs, ss, read_cgi);
 }
 
-static void init_dcgi(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *qs, const char *ss)
+static void init_dcgi(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss)
 {
-	init_cgi_common(EV_A_ c, &c->task_data.dct.ct, fd, sb, path, fn, qs, ss, read_dcgi);
-	init_gph(EV_A_ c, -1, sb, path, fn, qs, ss);
+	init_cgi_common(EV_A_ c, &c->task_data.dct.ct, fd, sb, path, fn, pi, qs, ss, read_dcgi);
+	init_gph(EV_A_ c, -1, sb, path, fn, NULL, qs, ss);
 }
 
 static const char *format_size(off_t bytes)
@@ -1161,6 +1204,37 @@ static void update_gph(EV_P_ struct client *c, int revents)
 	}
 }
 
+static void swaptoscriptdir(int *dfd, char *p, char *bn)
+{
+	int t;
+
+	if (bn == p)
+		return;
+
+	bn[-1] = '\0';
+	if ((t = openat(*dfd, p, O_RDONLY | O_DIRECTORY) >= 0)) {
+		close(*dfd);
+		*dfd = t;
+	}
+	bn[-1] = '/';
+}
+
+static char *splitaccessat(int dfd, char *path, const char *delim, size_t off, int mode, int flags)
+{
+	char *p;
+	char t;
+
+	if (!(p = strstr(path, delim)))
+		return NULL;
+	t = p[off];
+	p[off] = '\0';
+	if (faccessat(dfd, path, mode, flags)) {
+		p[off] = t;
+		return NULL;
+	}
+	return p + off + 1;
+}
+
 static void update_read(EV_P_ struct client *c, int revents)
 {
 	int r;
@@ -1239,8 +1313,10 @@ static void update_read(EV_P_ struct client *c, int revents)
 		char *bn;
 		char *qs;
 		char *ss;
+		char *pi;
 		const char *uri;
 		size_t rl;
+		int ffd;
 
 		memcpy(buffer, c->buffer, nl - c->buffer);
 		nl += buffer - c->buffer;
@@ -1281,7 +1357,7 @@ static void update_read(EV_P_ struct client *c, int revents)
 
 		if ((uri = strnpfx(buffer, rl, "URI:")) || (uri = strnpfx(buffer, rl, "URL:"))) {
 			c->task = TASK_REDIRECT;
-			tasks[c->task].init(EV_A_ c, -1, NULL, buffer, uri, qs, ss);
+			tasks[c->task].init(EV_A_ c, -1, NULL, buffer, uri, NULL, qs, ss);
 			return;
 		}
 
@@ -1295,28 +1371,30 @@ static void update_read(EV_P_ struct client *c, int revents)
 
 		int dfd = open(gopherroot, O_RDONLY | O_DIRECTORY);
 		if (dfd >= 0) {
-			if ((strsfx(bn, ".cgi") || strsfx(bn, ".dcgi")) && !faccessat(dfd, p, X_OK, 0)) {
-				c->task = strsfx(bn, ".dcgi") ? TASK_DCGI : TASK_CGI;
-				if (bn > p) {
-					int t;
-					bn[-1] = '\0';
-					if ((t = openat(dfd, p, O_RDONLY | O_DIRECTORY) >= 0)) {
-						close(dfd);
-						dfd = t;
-					}
-					bn[-1] = '/';
-				}
-				tasks[c->task].init(EV_A_ c, dfd, NULL, p, bn, qs, ss);
-			} else {
-				int ffd = openat(dfd, rl ? p : ".", O_RDONLY);
-				if (ffd >= 0) {
-					struct stat sb;
+			if (strsfx(bn, ".cgi") && !faccessat(dfd, p, X_OK, 0)) {
+				c->task = TASK_CGI;
+				swaptoscriptdir(&dfd, p, bn);
+				tasks[c->task].init(EV_A_ c, dfd, NULL, p, bn, NULL, qs, ss);
+			} else if (strsfx(bn, ".dcgi") && !faccessat(dfd, p, X_OK, 0)) {
+				c->task = TASK_DCGI;
+				swaptoscriptdir(&dfd, p, bn);
+				tasks[c->task].init(EV_A_ c, dfd, NULL, p, bn, NULL, qs, ss);
+			} else if ((ffd = openat(dfd, rl ? p : ".", O_RDONLY)) >= 0) {
+				struct stat sb;
 
-					fstat(ffd, &sb);
-					guess_task(EV_A_ c, ffd, &sb, p, bn, qs, ss);
-				} else {
-					client_error(EV_A_ c, "Resource not found");
-				}
+				fstat(ffd, &sb);
+				guess_task(EV_A_ c, ffd, &sb, p, bn, qs, ss);
+			} else if ((pi = splitaccessat(dfd, p, ".cgi/", 4, X_OK, 0))) {
+				c->task = TASK_CGI;
+				bn = xbasename(p);
+				swaptoscriptdir(&dfd, p, bn);
+				tasks[c->task].init(EV_A_ c, dfd, NULL, p, bn, pi, qs, ss);
+			} else if ((pi = splitaccessat(dfd, p, ".cgi/", 5, X_OK, 0))) {
+				c->task = TASK_CGI;
+				swaptoscriptdir(&dfd, p, bn);
+				tasks[c->task].init(EV_A_ c, dfd, NULL, p, bn, pi, qs, ss);
+			} else {
+				client_error(EV_A_ c, "Resource not found");
 			}
 			close(dfd);
 		} else {
