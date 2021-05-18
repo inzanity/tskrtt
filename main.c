@@ -841,6 +841,9 @@ static void init_cgi_common(EV_P_ struct client *c, struct cgi_task *ct, int fd,
 		return;
 	}
 
+	fchdir(fd);
+	close(fd);
+
 	close(pfd[0]);
 	close(STDIN_FILENO);
 	close(STDOUT_FILENO);
@@ -862,8 +865,6 @@ static void init_cgi_common(EV_P_ struct client *c, struct cgi_task *ct, int fd,
 	}
 
 	file = joinstr(gopherroot, path, '/');
-	fchdir(fd);
-	close(fd);
 
 	if (!pi)
 		pi = "";
@@ -915,6 +916,11 @@ static void init_cgi(EV_P_ struct client *c, int fd, struct stat *sb, const char
 static void init_dcgi(EV_P_ struct client *c, int fd, struct stat *sb, const char *path, const char *fn, const char *pi, const char *qs, const char *ss)
 {
 	init_cgi_common(EV_A_ c, &c->task_data.dct.ct, fd, sb, path, fn, pi, qs, ss, read_dcgi);
+	if (pi) {
+		/* TODO: make this nicer */
+		((char *)pi)[-1] = '/';
+		fn = xbasename((char *)path);
+	}
 	init_gph(EV_A_ c, -1, sb, path, fn, NULL, qs, ss);
 }
 
@@ -1212,7 +1218,7 @@ static void swaptoscriptdir(int *dfd, char *p, char *bn)
 		return;
 
 	bn[-1] = '\0';
-	if ((t = openat(*dfd, p, O_RDONLY | O_DIRECTORY) >= 0)) {
+	if ((t = openat(*dfd, p, O_RDONLY | O_DIRECTORY)) >= 0) {
 		close(*dfd);
 		*dfd = t;
 	}
@@ -1389,8 +1395,9 @@ static void update_read(EV_P_ struct client *c, int revents)
 				bn = xbasename(p);
 				swaptoscriptdir(&dfd, p, bn);
 				tasks[c->task].init(EV_A_ c, dfd, NULL, p, bn, pi, qs, ss);
-			} else if ((pi = splitaccessat(dfd, p, ".cgi/", 5, X_OK, 0))) {
-				c->task = TASK_CGI;
+			} else if ((pi = splitaccessat(dfd, p, ".dcgi/", 5, X_OK, 0))) {
+				c->task = TASK_DCGI;
+				bn = xbasename(p);
 				swaptoscriptdir(&dfd, p, bn);
 				tasks[c->task].init(EV_A_ c, dfd, NULL, p, bn, pi, qs, ss);
 			} else {
@@ -1557,6 +1564,8 @@ static void listen_cb(EV_P_ ev_io *w, int revents)
 
 	if (fd < 0)
 		return;
+
+	fcntl(fd, F_SETFD, FD_CLOEXEC);
 
 	c = malloc(sizeof(*c));
 	if (!c) {
