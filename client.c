@@ -166,8 +166,10 @@ void client_close(EV_P_ struct client *c)
 {
 	tasks[c->task].finish(EV_A_ c);
 #ifdef USE_TLS
-	if (c->tlsstate > PLAIN)
+	if (c->tlsstate > PLAIN) {
 		tls_close(c->tlsctx);
+		tls_free(c->tlsctx);
+	}
 #endif
 	ev_timer_stop(EV_A_ &c->timeout);
 	ev_io_stop(EV_A_ &c->watcher);
