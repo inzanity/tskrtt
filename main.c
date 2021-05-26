@@ -1,3 +1,7 @@
+#ifdef USE_CHROOT
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#endif
 #define _POSIX_C_SOURCE 200809L
 
 #include <netinet/in.h>
@@ -202,6 +206,11 @@ int main (int argc, char *argv[])
 	const char *logfile = NULL;
 	int lfd = -1;
 	bool dofork = true;
+#ifdef USE_CHROOT
+	bool dochroot = false;
+#endif
+	uid_t uid;
+	gid_t gid;
 
 	signal(SIGPIPE, SIG_IGN);
 
@@ -212,6 +221,11 @@ int main (int argc, char *argv[])
 		case '6':
 			hints.ai_family = AF_INET6;
 			break;
+#ifdef USE_CHROOT
+		case 'c':
+			dochroot = true;
+			break;
+#endif
 		case 'd':
 			dofork = false;
 			break;
@@ -302,22 +316,6 @@ int main (int argc, char *argv[])
 		listen_watcher.tlsctx = NULL;
 #endif
 
-	if (group) {
-		struct group *g = getgrnam(group);
-		if (!g)
-			croak("No such group");
-		if (setgid(g->gr_gid))
-			croak("setgid failed");
-	}
-
-	if (user) {
-		struct passwd *u = getpwnam(user);
-		if (!u)
-			croak("No such user");
-		if (setuid(u->pw_uid))
-			croak("setuid failed");
-	}
-
 	if (*gopherroot != '/' && getcwd(gopherrootbuf, sizeof(gopherrootbuf))) {
 		size_t l = strlen(gopherrootbuf);
 		int ll = snprintf(gopherrootbuf + l, sizeof(gopherrootbuf) - l, "/%s", gopherroot);
@@ -326,6 +324,33 @@ int main (int argc, char *argv[])
 			gopherroot = gopherrootbuf;
 		}
 	}
+
+	if (user) {
+		struct passwd *u = getpwnam(user);
+		if (!u)
+			croak("No such user");
+		uid = u->pw_uid;
+	}
+
+	if (group) {
+		struct group *g = getgrnam(group);
+		if (!g)
+			croak("No such group");
+		gid = g->gr_gid;
+	}
+
+#ifdef USE_CHROOT
+	if (dochroot) {
+		if (chroot(gopherroot))
+			croak("chroot failed");
+		gopherroot = strcpy(gopherrootbuf, "/");
+	}
+#endif
+
+	if (group && setgid(gid))
+		croak("setgid failed");
+	if (user && setuid(uid))
+		croak("setuid failed");
 
 	if (dofork) {
 		if (fork()) {

@@ -14,6 +14,8 @@ Usage:
 	-4		Only listen for IPv4 connections.
 	
 	-6		Only listen for IPv6 connections.
+
+	-c		Chroot to root directory.
 	
 	-d		Don't fork into background.
 	
@@ -71,6 +73,12 @@ Dynamic content:
 	#!/usr/bin/php-cgi --no-header
 
 	to avoid HTTP headers in the output.
+
+Chroot:
+	tskrtt can chroot to root dir (if built with support, chroot() is not
+	part of POSIX. Note that this has immerse effect on d?cgi, whereas
+	their interpreter / dynamic libraries need to be available inside the
+	chroot.
 
 Reporting bugs:
 	Bugs can be reported to inz@inz.fi via email.
