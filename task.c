@@ -94,14 +94,18 @@ static bool tryfileat(int *fd, const char *fn)
 static char *joinstr(const char *a, const char *b, char separator)
 {
 	char *rv;
+	size_t al;
 	if (!a || !*a)
 		return strdup(b);
 	if (!b)
 		return strdup(a);
-	rv = malloc(strlen(a) + strlen(b) + 2);
+	al = strlen(a);
+	if (al && a[al - 1] == separator)
+		al--;
+	rv = malloc(al + strlen(b) + 2);
 	if (!rv)
 		return NULL;
-	sprintf(rv, "%s%c%s", a, separator, b);
+	sprintf(rv, "%.*s%c%s", (int)al, a, separator, b);
 	return rv;
 }
 
